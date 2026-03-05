@@ -1,0 +1,1193 @@
+{% extends "vehicles/base.html" %}
+{% load static %}
+
+{% block title %}Camera Integration - CCTV Vehicle Monitor{% endblock %}
+{% block page_title %}Camera Integration{% endblock %}
+
+{% block content %}
+<!-- Stats Row -->
+<div class="cam-stats-row">
+    <div class="cam-stat">
+        <span class="cam-stat__value">{{ total_cameras }}</span>
+        <span class="cam-stat__label">Total Cameras</span>
+    </div>
+    <div class="cam-stat cam-stat--active">
+        <span class="cam-stat__value">{{ active_cameras }}</span>
+        <span class="cam-stat__label">Active</span>
+    </div>
+    <div class="cam-stat cam-stat--online">
+        <span class="cam-stat__value">{{ online_cameras }}</span>
+        <span class="cam-stat__label">Online</span>
+    </div>
+    <div class="cam-stat cam-stat--add">
+        <button class="btn btn--primary" id="btn-add-camera" onclick="openAddModal()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            Add Camera
+        </button>
+    </div>
+</div>
+
+<!-- Connection Type Guide -->
+<div class="card card--guide" id="connection-guide-card">
+    <div class="card__header">
+        <h2 class="card__title">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            Supported Camera Types
+        </h2>
+    </div>
+    <div class="card__body">
+        <div class="camera-types-grid">
+            <div class="camera-type-card">
+                <div class="camera-type-icon camera-type-icon--usb">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="4" y="2" width="16" height="20" rx="2" />
+                        <line x1="12" y1="18" x2="12" y2="18.01" />
+                    </svg>
+                </div>
+                <h4>USB / Webcam</h4>
+                <p>Built-in or USB connected cameras. Use index 0, 1, 2...</p>
+            </div>
+            <div class="camera-type-card">
+                <div class="camera-type-icon camera-type-icon--wifi">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M5 12.55a11 11 0 0 1 14.08 0" />
+                        <path d="M1.42 9a16 16 0 0 1 21.16 0" />
+                        <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+                        <line x1="12" y1="20" x2="12.01" y2="20" />
+                    </svg>
+                </div>
+                <h4>WiFi Camera</h4>
+                <p>Wireless IP cameras. Requires IP address & credentials.</p>
+            </div>
+            <div class="camera-type-card">
+                <div class="camera-type-icon camera-type-icon--ethernet">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="1" y="6" width="22" height="12" rx="2" />
+                        <line x1="6" y1="10" x2="6" y2="14" />
+                        <line x1="10" y1="10" x2="10" y2="14" />
+                        <line x1="14" y1="10" x2="14" y2="14" />
+                        <line x1="18" y1="10" x2="18" y2="14" />
+                    </svg>
+                </div>
+                <h4>Ethernet / LAN</h4>
+                <p>Wired network cameras via Ethernet cable. Most reliable.</p>
+            </div>
+            <div class="camera-type-card">
+                <div class="camera-type-icon camera-type-icon--rtsp">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="23 7 16 12 23 17 23 7" />
+                        <rect x="1" y="5" width="15" height="14" rx="2" />
+                    </svg>
+                </div>
+                <h4>RTSP Stream</h4>
+                <p>Real-Time Streaming Protocol. Standard for CCTV systems.</p>
+            </div>
+            <div class="camera-type-card">
+                <div class="camera-type-icon camera-type-icon--http">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="2" y1="12" x2="22" y2="12" />
+                        <path
+                            d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+                    </svg>
+                </div>
+                <h4>HTTP / MJPEG</h4>
+                <p>HTTP-based video streams. Works with most web cameras.</p>
+            </div>
+            <div class="camera-type-card">
+                <div class="camera-type-icon camera-type-icon--onvif">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3" />
+                        <path
+                            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9" />
+                    </svg>
+                </div>
+                <h4>ONVIF</h4>
+                <p>ONVIF-compatible cameras. Industry standard protocol.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Camera Grid -->
+<div class="card" id="camera-grid-card">
+    <div class="card__header">
+        <h2 class="card__title">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                <circle cx="12" cy="13" r="4" />
+            </svg>
+            Connected Cameras
+        </h2>
+        <span class="record-count-badge">{{ total_cameras }} cameras</span>
+    </div>
+    <div class="card__body">
+        {% if cameras %}
+        <div class="cameras-grid" id="cameras-grid">
+            {% for cam in cameras %}
+            <div class="camera-card" id="camera-card-{{ cam.id }}" data-id="{{ cam.id }}">
+                <div class="camera-card__header">
+                    <div class="camera-card__status">
+                        <span class="status-indicator status-indicator--{{ cam.status }}"></span>
+                        <span class="status-label">{{ cam.get_status_display }}</span>
+                    </div>
+                    <div class="camera-card__actions-top">
+                        <button class="btn-icon-sm" onclick="toggleCamera({{ cam.id }})"
+                            title="{% if cam.is_active %}Deactivate{% else %}Activate{% endif %}">
+                            {% if cam.is_active %}
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-success)"
+                                stroke-width="2">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                                <circle cx="12" cy="12" r="3" />
+                            </svg>
+                            {% else %}
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)"
+                                stroke-width="2">
+                                <path
+                                    d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                                <line x1="1" y1="1" x2="23" y2="23" />
+                            </svg>
+                            {% endif %}
+                        </button>
+                    </div>
+                </div>
+
+                <div class="camera-card__preview" id="preview-{{ cam.id }}">
+                    <div class="camera-preview-placeholder">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="1.5" opacity="0.3">
+                            <path
+                                d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                            <circle cx="12" cy="13" r="4" />
+                        </svg>
+                        <span>Click "Test" to preview</span>
+                    </div>
+                </div>
+
+                <div class="camera-card__info">
+                    <h3 class="camera-card__name">{{ cam.name }}</h3>
+                    <div class="camera-card__meta">
+                        <span class="camera-card__type-badge camera-card__type-badge--{{ cam.connection_type }}">
+                            {{ cam.get_connection_type_display }}
+                        </span>
+                        {% if cam.location %}
+                        <span class="camera-card__location">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+                                <circle cx="12" cy="10" r="3" />
+                            </svg>
+                            {{ cam.location }}
+                        </span>
+                        {% endif %}
+                    </div>
+                    <div class="camera-card__details">
+                        {% if cam.connection_type == 'usb' %}
+                        <span class="detail-item">Device: {{ cam.source }}</span>
+                        {% else %}
+                        <span class="detail-item">IP: {{ cam.ip_address }}{% if cam.port %}:{{ cam.port }}{% endif %}</span>
+                        {% endif %}
+                        <span class="detail-item">{{ cam.resolution }} @ {{ cam.fps }}fps</span>
+                        {% if cam.detection_enabled %}
+                        <span class="detail-item detail-item--detect"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Detection ON</span>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div class="camera-card__actions">
+                    <button class="btn btn--sm btn--primary" onclick="testCamera({{ cam.id }})"
+                        id="btn-test-{{ cam.id }}">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <polygon points="5 3 19 12 5 21 5 3" />
+                        </svg>
+                        Test
+                    </button>
+                    <button class="btn btn--sm btn--ghost" onclick="editCamera({{ cam.id }})">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                        </svg>
+                        Edit
+                    </button>
+                    <a href="{% url 'vehicles:live_feed' %}?source={{ cam.source }}" class="btn btn--sm btn--success">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <polygon points="23 7 16 12 23 17 23 7" />
+                            <rect x="1" y="5" width="15" height="14" rx="2" />
+                        </svg>
+                        View
+                    </a>
+                    <button class="btn btn--sm btn--danger" onclick="deleteCamera({{ cam.id }}, '{{ cam.name }}')">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <polyline points="3 6 5 6 21 6" />
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                opacity="0.3">
+                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                <circle cx="12" cy="13" r="4" />
+            </svg>
+            <h3>No Cameras Connected</h3>
+            <p>Add your first camera to start monitoring vehicles</p>
+            <button class="btn btn--primary" onclick="openAddModal()">+ Add Camera</button>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Add / Edit Camera Modal -->
+<div class="modal-overlay" id="camera-modal" style="display:none;">
+    <div class="modal" id="camera-modal-content">
+        <div class="modal__header">
+            <h2 class="modal__title" id="modal-title">Add New Camera</h2>
+            <button class="btn-icon" onclick="closeModal()">✕</button>
+        </div>
+        <form id="camera-form" method="post">
+            <div class="modal__body">
+                <!-- Basic Info -->
+                <div class="form-section">
+                    <h4 class="form-section__title">Basic Information</h4>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label class="form-label" for="cam-name">Camera Name *</label>
+                            <input type="text" id="cam-name" name="name" class="text-input"
+                                placeholder="e.g. Main Gate Camera" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="cam-location">Location</label>
+                            <input type="text" id="cam-location" name="location" class="text-input"
+                                placeholder="e.g. Parking Lot, Entrance">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Connection Type -->
+                <div class="form-section">
+                    <h4 class="form-section__title">Connection Type</h4>
+                    <div class="connection-type-selector" id="connection-type-selector">
+                        <label class="conn-type-option active" data-type="usb">
+                            <input type="radio" name="connection_type" value="usb" checked>
+                            <span class="conn-type-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" stroke-width="2">
+                                    <rect x="4" y="2" width="16" height="20" rx="2" />
+                                    <line x1="12" y1="18" x2="12" y2="18.01" />
+                                </svg></span>
+                            <span class="conn-type-name">USB/Webcam</span>
+                        </label>
+                        <label class="conn-type-option" data-type="wifi">
+                            <input type="radio" name="connection_type" value="wifi">
+                            <span class="conn-type-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" stroke-width="2">
+                                    <path d="M5 12.55a11 11 0 0 1 14.08 0" />
+                                    <path d="M1.42 9a16 16 0 0 1 21.16 0" />
+                                    <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+                                    <line x1="12" y1="20" x2="12.01" y2="20" />
+                                </svg></span>
+                            <span class="conn-type-name">WiFi</span>
+                        </label>
+                        <label class="conn-type-option" data-type="ethernet">
+                            <input type="radio" name="connection_type" value="ethernet">
+                            <span class="conn-type-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" stroke-width="2">
+                                    <rect x="1" y="6" width="22" height="12" rx="2" />
+                                    <line x1="6" y1="10" x2="6" y2="14" />
+                                    <line x1="10" y1="10" x2="10" y2="14" />
+                                    <line x1="14" y1="10" x2="14" y2="14" />
+                                    <line x1="18" y1="10" x2="18" y2="14" />
+                                </svg></span>
+                            <span class="conn-type-name">Ethernet</span>
+                        </label>
+                        <label class="conn-type-option" data-type="rtsp">
+                            <input type="radio" name="connection_type" value="rtsp">
+                            <span class="conn-type-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" stroke-width="2">
+                                    <polygon points="23 7 16 12 23 17 23 7" />
+                                    <rect x="1" y="5" width="15" height="14" rx="2" />
+                                </svg></span>
+                            <span class="conn-type-name">RTSP</span>
+                        </label>
+                        <label class="conn-type-option" data-type="http">
+                            <input type="radio" name="connection_type" value="http">
+                            <span class="conn-type-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" stroke-width="2">
+                                    <circle cx="12" cy="12" r="10" />
+                                    <line x1="2" y1="12" x2="22" y2="12" />
+                                    <path
+                                        d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+                                </svg></span>
+                            <span class="conn-type-name">HTTP</span>
+                        </label>
+                        <label class="conn-type-option" data-type="onvif">
+                            <input type="radio" name="connection_type" value="onvif">
+                            <span class="conn-type-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" stroke-width="2">
+                                    <circle cx="12" cy="12" r="3" />
+                                    <path
+                                        d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9" />
+                                </svg></span>
+                            <span class="conn-type-name">ONVIF</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- USB Settings -->
+                <div class="form-section conn-settings" id="settings-usb">
+                    <h4 class="form-section__title">USB Camera Settings</h4>
+                    <div class="form-group">
+                        <label class="form-label" for="cam-source">Camera Index</label>
+                        <input type="text" id="cam-source" name="source" class="text-input" value="0"
+                            placeholder="0, 1, 2...">
+                        <span class="form-help">Usually 0 for built-in webcam, 1 for external USB camera</span>
+                    </div>
+                </div>
+
+                <!-- Network Settings (WiFi/Ethernet/RTSP/HTTP/ONVIF) -->
+                <div class="form-section conn-settings" id="settings-network" style="display:none;">
+                    <h4 class="form-section__title">Network Settings</h4>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label class="form-label" for="cam-ip">IP Address *</label>
+                            <input type="text" id="cam-ip" name="ip_address" class="text-input"
+                                placeholder="192.168.1.100">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="cam-port">Port</label>
+                            <input type="number" id="cam-port" name="port" class="text-input"
+                                placeholder="554 (RTSP) / 80 (HTTP)">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="cam-username">Username</label>
+                            <input type="text" id="cam-username" name="username" class="text-input" placeholder="admin">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="cam-password">Password</label>
+                            <input type="password" id="cam-password" name="password" class="text-input"
+                                placeholder="password">
+                        </div>
+                        <div class="form-group form-group--full">
+                            <label class="form-label" for="cam-stream-path">Stream Path</label>
+                            <input type="text" id="cam-stream-path" name="stream_path" class="text-input"
+                                placeholder="/stream1 or /cam/realmonitor">
+                            <span class="form-help">Common paths: <code>/stream1</code>, <code>/h264/ch1/main</code>,
+                                <code>/cam/realmonitor?channel=1&subtype=0</code></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Video Settings -->
+                <div class="form-section">
+                    <h4 class="form-section__title">Video Settings</h4>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label class="form-label" for="cam-resolution">Resolution</label>
+                            <select id="cam-resolution" name="resolution" class="select-input">
+                                <option value="640x480">640x480 (SD)</option>
+                                <option value="1280x720" selected>1280x720 (HD)</option>
+                                <option value="1920x1080">1920x1080 (Full HD)</option>
+                                <option value="2560x1440">2560x1440 (2K)</option>
+                                <option value="3840x2160">3840x2160 (4K)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="cam-fps">Frame Rate (FPS)</label>
+                            <input type="number" id="cam-fps" name="fps" class="text-input" value="15" min="1" max="30">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label form-checkbox-label">
+                                <input type="checkbox" id="cam-detection" name="detection_enabled" checked>
+                                <span>Enable Vehicle Detection</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal__footer">
+                <button type="button" class="btn btn--ghost" onclick="closeModal()">Cancel</button>
+                <button type="submit" class="btn btn--primary" id="btn-save-camera">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                        <polyline points="17 21 17 13 7 13 7 21" />
+                        <polyline points="7 3 7 8 15 8" />
+                    </svg>
+                    Save Camera
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Test Result Modal -->
+<div class="modal-overlay" id="test-modal" style="display:none;">
+    <div class="modal modal--sm">
+        <div class="modal__header">
+            <h2 class="modal__title">Camera Test Result</h2>
+            <button class="btn-icon" onclick="document.getElementById('test-modal').style.display='none'">✕</button>
+        </div>
+        <div class="modal__body">
+            <div id="test-result-content">
+                <div class="test-loading">
+                    <div class="spinner"></div>
+                    <p>Testing camera connection...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* Camera Stats Row */
+    .cam-stats-row {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+    }
+
+    .cam-stat {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-md);
+        padding: 16px 24px;
+        text-align: center;
+        min-width: 120px;
+    }
+
+    .cam-stat__value {
+        font-size: 1.8rem;
+        font-weight: 800;
+        display: block;
+        letter-spacing: -1px;
+    }
+
+    .cam-stat--active .cam-stat__value {
+        color: var(--accent-primary-light);
+    }
+
+    .cam-stat--online .cam-stat__value {
+        color: var(--accent-success);
+    }
+
+    .cam-stat__label {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .cam-stat--add {
+        margin-left: auto;
+        background: transparent;
+        border: none;
+        padding: 0;
+    }
+
+    /* Camera Types Grid */
+    .camera-types-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 16px;
+    }
+
+    .camera-type-card {
+        text-align: center;
+        padding: 20px 16px;
+        background: var(--bg-input);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-md);
+        transition: all var(--transition-normal);
+    }
+
+    .camera-type-card:hover {
+        border-color: var(--accent-primary-glow-strong);
+        transform: translateY(-2px);
+    }
+
+    .camera-type-card h4 {
+        font-size: 0.85rem;
+        margin: 10px 0 4px;
+    }
+
+    .camera-type-card p {
+        font-size: 0.7rem;
+        color: var(--text-muted);
+        line-height: 1.4;
+    }
+
+    .camera-type-icon {
+        width: 52px;
+        height: 52px;
+        border-radius: var(--radius-md);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0 auto;
+    }
+
+    .camera-type-icon--usb {
+        background: rgba(99, 102, 241, 0.15);
+        color: var(--accent-primary-light);
+    }
+
+    .camera-type-icon--wifi {
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--accent-success);
+    }
+
+    .camera-type-icon--ethernet {
+        background: rgba(6, 182, 212, 0.15);
+        color: var(--accent-info);
+    }
+
+    .camera-type-icon--rtsp {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--accent-danger);
+    }
+
+    .camera-type-icon--http {
+        background: rgba(245, 158, 11, 0.15);
+        color: var(--accent-warning);
+    }
+
+    .camera-type-icon--onvif {
+        background: rgba(167, 139, 250, 0.15);
+        color: #a78bfa;
+    }
+
+    /* Camera Cards Grid */
+    .cameras-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+        gap: 20px;
+    }
+
+    .camera-card {
+        background: var(--bg-input);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+        transition: all var(--transition-normal);
+    }
+
+    .camera-card:hover {
+        border-color: var(--accent-primary-glow-strong);
+        box-shadow: var(--shadow-md);
+    }
+
+    .camera-card__header {
+        padding: 12px 16px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid var(--border-color);
+    }
+
+    .camera-card__status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .status-indicator {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+    }
+
+    .status-indicator--online {
+        background: var(--accent-success);
+        box-shadow: 0 0 6px rgba(16, 185, 129, 0.5);
+    }
+
+    .status-indicator--offline {
+        background: var(--text-muted);
+    }
+
+    .status-indicator--connecting {
+        background: var(--accent-warning);
+        animation: pulse-dot 1.5s ease-in-out infinite;
+    }
+
+    .status-indicator--error {
+        background: var(--accent-danger);
+    }
+
+    .status-label {
+        font-size: 0.75rem;
+        font-weight: 500;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .btn-icon-sm {
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 4px;
+        border-radius: 4px;
+        transition: background var(--transition-fast);
+    }
+
+    .btn-icon-sm:hover {
+        background: rgba(255, 255, 255, 0.05);
+    }
+
+    .camera-card__preview {
+        height: 180px;
+        background: #000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+    }
+
+    .camera-card__preview img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .camera-preview-placeholder {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        color: var(--text-muted);
+        font-size: 0.75rem;
+    }
+
+    .camera-card__info {
+        padding: 14px 16px;
+    }
+
+    .camera-card__name {
+        font-size: 1rem;
+        font-weight: 600;
+        margin-bottom: 6px;
+    }
+
+    .camera-card__meta {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 8px;
+        flex-wrap: wrap;
+    }
+
+    .camera-card__type-badge {
+        font-size: 0.65rem;
+        font-weight: 600;
+        padding: 3px 8px;
+        border-radius: 4px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .camera-card__type-badge--usb {
+        background: rgba(99, 102, 241, 0.15);
+        color: var(--accent-primary-light);
+    }
+
+    .camera-card__type-badge--wifi {
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--accent-success);
+    }
+
+    .camera-card__type-badge--ethernet {
+        background: rgba(6, 182, 212, 0.15);
+        color: var(--accent-info);
+    }
+
+    .camera-card__type-badge--rtsp {
+        background: rgba(239, 68, 68, 0.15);
+        color: var(--accent-danger);
+    }
+
+    .camera-card__type-badge--http {
+        background: rgba(245, 158, 11, 0.15);
+        color: var(--accent-warning);
+    }
+
+    .camera-card__type-badge--onvif {
+        background: rgba(167, 139, 250, 0.15);
+        color: #a78bfa;
+    }
+
+    .camera-card__location {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .camera-card__details {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .detail-item {
+        font-size: 0.7rem;
+        color: var(--text-muted);
+        background: rgba(255, 255, 255, 0.03);
+        padding: 2px 8px;
+        border-radius: 4px;
+        font-family: 'JetBrains Mono', monospace;
+    }
+
+    .detail-item--detect {
+        color: var(--accent-success);
+    }
+
+    .camera-card__actions {
+        padding: 12px 16px;
+        border-top: 1px solid var(--border-color);
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    /* Modal */
+    .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.6);
+        backdrop-filter: blur(4px);
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+    }
+
+    .modal {
+        background: var(--bg-card);
+        border: 1px solid var(--border-color);
+        border-radius: var(--radius-xl);
+        width: 100%;
+        max-width: 680px;
+        max-height: 90vh;
+        overflow-y: auto;
+        box-shadow: var(--shadow-lg);
+        animation: modalIn 0.25s ease-out;
+    }
+
+    .modal--sm {
+        max-width: 480px;
+    }
+
+    @keyframes modalIn {
+        from {
+            opacity: 0;
+            transform: scale(0.95) translateY(10px);
+        }
+
+        to {
+            opacity: 1;
+            transform: scale(1) translateY(0);
+        }
+    }
+
+    .modal__header {
+        padding: 20px 24px;
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .modal__title {
+        font-size: 1.15rem;
+        font-weight: 700;
+    }
+
+    .modal__body {
+        padding: 24px;
+    }
+
+    .modal__footer {
+        padding: 16px 24px;
+        border-top: 1px solid var(--border-color);
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+    }
+
+    /* Form Styles */
+    .form-section {
+        margin-bottom: 24px;
+    }
+
+    .form-section__title {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: var(--text-secondary);
+        margin-bottom: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .form-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+    }
+
+    .form-group {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .form-group--full {
+        grid-column: 1 / -1;
+    }
+
+    .form-label {
+        font-size: 0.8rem;
+        font-weight: 500;
+        color: var(--text-secondary);
+    }
+
+    .form-help {
+        font-size: 0.7rem;
+        color: var(--text-muted);
+    }
+
+    .form-help code {
+        background: rgba(255, 255, 255, 0.06);
+        padding: 1px 5px;
+        border-radius: 3px;
+        font-size: 0.7rem;
+    }
+
+    .form-checkbox-label {
+        flex-direction: row !important;
+        align-items: center;
+        gap: 8px !important;
+        cursor: pointer;
+        padding-top: 20px;
+    }
+
+    .form-checkbox-label input[type="checkbox"] {
+        accent-color: var(--accent-primary);
+        width: 16px;
+        height: 16px;
+    }
+
+    /* Connection Type Selector */
+    .connection-type-selector {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 8px;
+    }
+
+    .conn-type-option {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        padding: 12px 8px;
+        border: 2px solid var(--border-color);
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        transition: all var(--transition-fast);
+        text-align: center;
+    }
+
+    .conn-type-option:hover {
+        border-color: var(--accent-primary-glow-strong);
+    }
+
+    .conn-type-option.active {
+        border-color: var(--accent-primary);
+        background: var(--accent-primary-glow);
+    }
+
+    .conn-type-option input[type="radio"] {
+        display: none;
+    }
+
+    .conn-type-icon {
+        font-size: 1.4rem;
+    }
+
+    .conn-type-name {
+        font-size: 0.65rem;
+        font-weight: 600;
+        color: var(--text-secondary);
+    }
+
+    .conn-type-option.active .conn-type-name {
+        color: var(--accent-primary-light);
+    }
+
+    /* Test Result */
+    .test-loading {
+        text-align: center;
+        padding: 20px;
+    }
+
+    .test-result {
+        text-align: center;
+    }
+
+    .test-result img {
+        width: 100%;
+        border-radius: var(--radius-md);
+        margin-bottom: 12px;
+    }
+
+    .test-success {
+        color: var(--accent-success);
+        font-weight: 600;
+    }
+
+    .test-error {
+        color: var(--accent-danger);
+    }
+
+    .test-source {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        margin-top: 8px;
+        word-break: break-all;
+    }
+
+    @media (max-width: 768px) {
+        .connection-type-selector {
+            grid-template-columns: repeat(3, 1fr);
+        }
+
+        .cameras-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .form-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let editingCameraId = null;
+
+    // Connection type switching
+    document.querySelectorAll('.conn-type-option').forEach(option => {
+        option.addEventListener('click', function () {
+            document.querySelectorAll('.conn-type-option').forEach(o => o.classList.remove('active'));
+            this.classList.add('active');
+            this.querySelector('input[type="radio"]').checked = true;
+
+            const type = this.dataset.type;
+            const isNetwork = type !== 'usb';
+
+            document.getElementById('settings-usb').style.display = isNetwork ? 'none' : 'block';
+            document.getElementById('settings-network').style.display = isNetwork ? 'block' : 'none';
+
+            // Set default port
+            if (type === 'rtsp' || type === 'wifi' || type === 'ethernet' || type === 'onvif') {
+                document.getElementById('cam-port').placeholder = '554';
+            } else if (type === 'http') {
+                document.getElementById('cam-port').placeholder = '80';
+            }
+        });
+    });
+
+    function openAddModal() {
+        editingCameraId = null;
+        document.getElementById('modal-title').textContent = 'Add New Camera';
+        document.getElementById('camera-form').reset();
+        document.getElementById('settings-usb').style.display = 'block';
+        document.getElementById('settings-network').style.display = 'none';
+        document.querySelectorAll('.conn-type-option').forEach(o => o.classList.remove('active'));
+        document.querySelector('.conn-type-option[data-type="usb"]').classList.add('active');
+        document.querySelector('.conn-type-option[data-type="usb"] input').checked = true;
+        document.getElementById('camera-modal').style.display = 'flex';
+    }
+
+    function closeModal() {
+        document.getElementById('camera-modal').style.display = 'none';
+        editingCameraId = null;
+    }
+
+    function editCamera(id) {
+        editingCameraId = id;
+        document.getElementById('modal-title').textContent = 'Edit Camera';
+
+        fetch(`/cameras/${id}/edit/`)
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('cam-name').value = data.name;
+                document.getElementById('cam-location').value = data.location || '';
+                document.getElementById('cam-source').value = data.source || '0';
+                document.getElementById('cam-ip').value = data.ip_address || '';
+                document.getElementById('cam-port').value = data.port || '';
+                document.getElementById('cam-username').value = data.username || '';
+                document.getElementById('cam-password').value = data.password || '';
+                document.getElementById('cam-stream-path').value = data.stream_path || '';
+                document.getElementById('cam-resolution').value = data.resolution || '1280x720';
+                document.getElementById('cam-fps').value = data.fps || 15;
+                document.getElementById('cam-detection').checked = data.detection_enabled;
+
+                // Set connection type
+                const type = data.connection_type;
+                document.querySelectorAll('.conn-type-option').forEach(o => o.classList.remove('active'));
+                const option = document.querySelector(`.conn-type-option[data-type="${type}"]`);
+                if (option) {
+                    option.classList.add('active');
+                    option.querySelector('input').checked = true;
+                }
+
+                const isNetwork = type !== 'usb';
+                document.getElementById('settings-usb').style.display = isNetwork ? 'none' : 'block';
+                document.getElementById('settings-network').style.display = isNetwork ? 'block' : 'none';
+
+                document.getElementById('camera-modal').style.display = 'flex';
+            });
+    }
+
+    // Form submission
+    document.getElementById('camera-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        const formData = new FormData(this);
+        const url = editingCameraId ? `/cameras/${editingCameraId}/edit/` : '{% url "vehicles:camera_add" %}';
+
+        fetch(url, {
+            method: 'POST',
+            body: formData,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    closeModal();
+                    location.reload();
+                }
+            })
+            .catch(err => alert('Error: ' + err.message));
+    });
+
+    function deleteCamera(id, name) {
+        if (!confirm(`Are you sure you want to delete camera "${name}"?`)) return;
+
+        fetch(`/cameras/${id}/delete/`, {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById(`camera-card-${id}`).remove();
+                }
+            });
+    }
+
+    function toggleCamera(id) {
+        fetch(`/cameras/${id}/toggle/`, {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) location.reload();
+            });
+    }
+
+    function testCamera(id) {
+        const testModal = document.getElementById('test-modal');
+        const resultContent = document.getElementById('test-result-content');
+        resultContent.innerHTML = '<div class="test-loading"><div class="spinner"></div><p>Testing camera connection...</p></div>';
+        testModal.style.display = 'flex';
+
+        const btn = document.getElementById(`btn-test-${id}`);
+        btn.classList.add('loading');
+        btn.disabled = true;
+
+        fetch(`/cameras/${id}/test/`, {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+            .then(r => r.json())
+            .then(data => {
+                btn.classList.remove('loading');
+                btn.disabled = false;
+
+                if (data.success) {
+                    resultContent.innerHTML = `
+                <div class="test-result">
+                    ${data.snapshot ? `<img src="${data.snapshot}" alt="Camera Test">` : ''}
+                    <p class="test-success">✅ Camera connected successfully!</p>
+                    <p class="test-source">Source: ${data.source_url}</p>
+                </div>
+            `;
+                    // Update preview
+                    const preview = document.getElementById(`preview-${id}`);
+                    if (preview && data.snapshot) {
+                        preview.innerHTML = `<img src="${data.snapshot}" alt="Preview">`;
+                    }
+                    // Update status indicator
+                    const card = document.getElementById(`camera-card-${id}`);
+                    const indicator = card.querySelector('.status-indicator');
+                    indicator.className = 'status-indicator status-indicator--online';
+                    card.querySelector('.status-label').textContent = 'Online';
+                } else {
+                    resultContent.innerHTML = `
+                <div class="test-result">
+                    <p class="test-error">❌ Camera connection failed</p>
+                    <p class="test-error" style="font-size:0.85rem;margin-top:8px;">${data.error}</p>
+                    <p class="test-source">Attempted: ${data.source_url}</p>
+                </div>
+            `;
+                }
+            })
+            .catch(err => {
+                btn.classList.remove('loading');
+                btn.disabled = false;
+                resultContent.innerHTML = `<div class="test-result"><p class="test-error">❌ Error: ${err.message}</p></div>`;
+            });
+    }
+
+    // Close modal on overlay click
+    document.getElementById('camera-modal').addEventListener('click', function (e) {
+        if (e.target === this) closeModal();
+    });
+
+    document.getElementById('test-modal').addEventListener('click', function (e) {
+        if (e.target === this) this.style.display = 'none';
+    });
+
+    // Close on Escape
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') {
+            closeModal();
+            document.getElementById('test-modal').style.display = 'none';
+        }
+    });
+</script>
+{% endblock %}

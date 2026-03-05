@@ -1,0 +1,114 @@
+{% extends "vehicles/base.html" %}
+{% load static %}
+
+{% block title %}Search Vehicle - CCTV Vehicle Monitor{% endblock %}
+{% block page_title %}Search Vehicle{% endblock %}
+
+{% block content %}
+<div class="search-container">
+    <!-- Search Box -->
+    <div class="search-hero" id="search-hero">
+        <div class="search-hero__content">
+            <h2 class="search-hero__title">Search Vehicle by Plate Number</h2>
+            <p class="search-hero__subtitle">Enter full or partial license plate number to find vehicle records</p>
+            <form method="get" action="{% url 'vehicles:search' %}" class="search-form" id="search-form">
+                <div class="search-input-wrapper">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        class="search-icon">
+                        <circle cx="11" cy="11" r="8" />
+                        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                    <input type="text" name="q" id="search-input" class="search-input"
+                        placeholder="e.g. KA01AB1234, TN, MH..." value="{{ query }}" autofocus autocomplete="off">
+                    <button type="submit" class="btn btn--primary btn--search-submit" id="btn-search-submit">
+                        Search
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Search Results -->
+    {% if query %}
+    <div class="card" id="search-results-card">
+        <div class="card__header">
+            <h2 class="card__title">
+                Search Results for "{{ query }}"
+            </h2>
+            <span class="record-count-badge">{{ result_count }} found</span>
+        </div>
+        <div class="card__body">
+            {% if results %}
+            <div class="table-wrapper">
+                <table class="data-table" id="search-results-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>License Plate</th>
+                            <th>Vehicle Type</th>
+                            <th>Confidence</th>
+                            <th>Date</th>
+                            <th>Time</th>
+                            <th>Image</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for record in results %}
+                        <tr class="table-row">
+                            <td class="td-index">{{ forloop.counter }}</td>
+                            <td>
+                                <span class="plate-badge">{{ record.license_plate }}</span>
+                            </td>
+                            <td>
+                                <span class="type-badge type-badge--{{ record.vehicle_type }}">
+                                    {{ record.get_vehicle_type_display }}
+                                </span>
+                            </td>
+                            <td>
+                                <div class="confidence-inline">
+                                    <div class="confidence-bar-sm">
+                                        <div class="confidence-bar-sm__fill"
+                                            style="width: {{ record.confidence|floatformat:0 }}%"></div>
+                                    </div>
+                                    <span>{{ record.confidence|floatformat:1 }}%</span>
+                                </div>
+                            </td>
+                            <td>{{ record.detected_at|date:"M d, Y" }}</td>
+                            <td class="td-time">{{ record.detected_at|date:"H:i:s" }}</td>
+                            <td>
+                                {% if record.captured_image %}
+                                <a href="{{ record.captured_image.url }}" target="_blank" class="img-link">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                                        <circle cx="8.5" cy="8.5" r="1.5" />
+                                        <polyline points="21 15 16 10 5 21" />
+                                    </svg>
+                                    View
+                                </a>
+                                {% else %}
+                                <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                    opacity="0.3">
+                    <circle cx="11" cy="11" r="8" />
+                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+                <h3>No Results Found</h3>
+                <p>No vehicle records match "{{ query }}"</p>
+                <p class="text-muted">Try a different search term or partial plate number</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

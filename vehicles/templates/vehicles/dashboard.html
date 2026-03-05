@@ -1,0 +1,293 @@
+{% extends "vehicles/base.html" %}
+{% load static %}
+
+{% block title %}Dashboard - CCTV Vehicle Monitor{% endblock %}
+{% block page_title %}Dashboard{% endblock %}
+
+{% block content %}
+<!-- Stats Cards -->
+<div class="stats-grid">
+    <div class="stat-card stat-card--primary" id="stat-total">
+        <div class="stat-card__icon">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path
+                    d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-2-2.2-3.3C13 5.6 11.9 5 10.8 5H7L3 6.5V12" />
+                <circle cx="7" cy="17" r="2" />
+                <circle cx="17" cy="17" r="2" />
+            </svg>
+        </div>
+        <div class="stat-card__content">
+            <span class="stat-card__value" id="today-total">{{ today_count }}</span>
+            <span class="stat-card__label">Vehicles Today</span>
+        </div>
+        <div class="stat-card__trend stat-card__trend--up">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
+                <polyline points="17 6 23 6 23 12" />
+            </svg>
+        </div>
+    </div>
+
+    <div class="stat-card stat-card--success" id="stat-unique">
+        <div class="stat-card__icon">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="2" y="7" width="20" height="10" rx="2" />
+                <path d="M6 11h2m2 0h2m2 0h2" />
+            </svg>
+        </div>
+        <div class="stat-card__content">
+            <span class="stat-card__value" id="today-unique">{{ today_unique }}</span>
+            <span class="stat-card__label">Unique Plates</span>
+        </div>
+    </div>
+
+    <div class="stat-card stat-card--warning" id="stat-cars">
+        <div class="stat-card__icon">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M5 17h14V9.5L16 5H8L5 9.5V17z" />
+                <circle cx="7.5" cy="15.5" r="1.5" />
+                <circle cx="16.5" cy="15.5" r="1.5" />
+                <path d="M5 9.5h14" />
+            </svg>
+        </div>
+        <div class="stat-card__content">
+            <span class="stat-card__value">{{ today_report.total_cars }}</span>
+            <span class="stat-card__label">Cars Detected</span>
+        </div>
+    </div>
+
+    <div class="stat-card stat-card--danger" id="stat-trucks">
+        <div class="stat-card__icon">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="1" y="3" width="15" height="13" />
+                <polygon points="16 8 20 8 23 11 23 16 16 16 16 8" />
+                <circle cx="5.5" cy="18.5" r="2.5" />
+                <circle cx="18.5" cy="18.5" r="2.5" />
+            </svg>
+        </div>
+        <div class="stat-card__content">
+            <span class="stat-card__value">{{ today_report.total_trucks }}</span>
+            <span class="stat-card__label">Trucks Detected</span>
+        </div>
+    </div>
+</div>
+
+<!-- Main Grid -->
+<div class="dashboard-grid">
+    <!-- Weekly Chart -->
+    <div class="card card--chart" id="weekly-chart-card">
+        <div class="card__header">
+            <h2 class="card__title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="20" x2="18" y2="10" />
+                    <line x1="12" y1="20" x2="12" y2="4" />
+                    <line x1="6" y1="20" x2="6" y2="14" />
+                </svg>
+                Weekly Overview
+            </h2>
+        </div>
+        <div class="card__body">
+            <div class="chart-container" id="weekly-chart">
+                {% for report in weekly_reports %}
+                <div class="chart-bar-group">
+                    <div class="chart-bar" style="height: {{ report.total_vehicles|default:0 }}%"
+                        data-value="{{ report.total_vehicles }}">
+                        <span class="chart-bar__value">{{ report.total_vehicles }}</span>
+                    </div>
+                    <span class="chart-bar__label">{{ report.date|date:"D" }}</span>
+                </div>
+                {% empty %}
+                <div class="empty-state">
+                    <p>No data for the past week</p>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Detections -->
+    <div class="card card--detections" id="recent-detections-card">
+        <div class="card__header">
+            <h2 class="card__title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <polyline points="12 6 12 12 16 14" />
+                </svg>
+                Recent Detections
+            </h2>
+            <a href="{% url 'vehicles:daily_records' %}" class="card__action">View All →</a>
+        </div>
+        <div class="card__body">
+            <div class="detection-list" id="detection-list">
+                {% for record in recent_detections %}
+                <div class="detection-item">
+                    <div class="detection-item__plate">
+                        <span class="plate-number">{{ record.license_plate }}</span>
+                    </div>
+                    <div class="detection-item__info">
+                        <span class="vehicle-type type--{{ record.vehicle_type }}">{{ record.get_vehicle_type_display
+                            }}</span>
+                        <span class="detection-time">{{ record.detected_at|date:"H:i:s" }}</span>
+                    </div>
+                    <div class="detection-item__confidence">
+                        <div class="confidence-bar">
+                            <div class="confidence-bar__fill" style="width: {{ record.confidence|floatformat:0 }}%">
+                            </div>
+                        </div>
+                        <span class="confidence-value">{{ record.confidence|floatformat:1 }}%</span>
+                    </div>
+                </div>
+                {% empty %}
+                <div class="empty-state">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                        opacity="0.4">
+                        <path
+                            d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-2-2.2-3.3C13 5.6 11.9 5 10.8 5H7L3 6.5V12" />
+                        <circle cx="7" cy="17" r="2" />
+                        <circle cx="17" cy="17" r="2" />
+                    </svg>
+                    <p>No vehicles detected yet</p>
+                    <a href="{% url 'vehicles:live_feed' %}" class="btn btn--primary btn--sm">Start Detection →</a>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="card card--actions" id="quick-actions-card">
+        <div class="card__header">
+            <h2 class="card__title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+                </svg>
+                Quick Actions
+            </h2>
+        </div>
+        <div class="card__body">
+            <div class="action-buttons">
+                <a href="{% url 'vehicles:live_feed' %}" class="action-btn action-btn--live" id="btn-start-live">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="5 3 19 12 5 21 5 3" />
+                    </svg>
+                    <span>Start Live Detection</span>
+                </a>
+                <button class="action-btn action-btn--snapshot" id="btn-snapshot" onclick="takeSnapshot()">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+                        <circle cx="12" cy="13" r="4" />
+                    </svg>
+                    <span>Capture Snapshot</span>
+                </button>
+                <a href="{% url 'vehicles:search' %}" class="action-btn action-btn--search" id="btn-search-plate">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8" />
+                        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                    <span>Search Plate</span>
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Vehicle Type Distribution -->
+    <div class="card card--distribution" id="distribution-card">
+        <div class="card__header">
+            <h2 class="card__title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21.21 15.89A10 10 0 1 1 8 2.83" />
+                    <path d="M22 12A10 10 0 0 0 12 2v10z" />
+                </svg>
+                Vehicle Distribution
+            </h2>
+        </div>
+        <div class="card__body">
+            <div class="distribution-list">
+                <div class="distribution-item">
+                    <div class="distribution-item__label">
+                        <span class="dot dot--car"></span> Cars
+                    </div>
+                    <div class="distribution-item__bar">
+                        <div class="distribution-fill distribution-fill--car"
+                            style="width: {% widthratio today_report.total_cars today_count 100 %}%"></div>
+                    </div>
+                    <span class="distribution-item__count">{{ today_report.total_cars }}</span>
+                </div>
+                <div class="distribution-item">
+                    <div class="distribution-item__label">
+                        <span class="dot dot--truck"></span> Trucks
+                    </div>
+                    <div class="distribution-item__bar">
+                        <div class="distribution-fill distribution-fill--truck"
+                            style="width: {% widthratio today_report.total_trucks today_count 100 %}%"></div>
+                    </div>
+                    <span class="distribution-item__count">{{ today_report.total_trucks }}</span>
+                </div>
+                <div class="distribution-item">
+                    <div class="distribution-item__label">
+                        <span class="dot dot--bus"></span> Buses
+                    </div>
+                    <div class="distribution-item__bar">
+                        <div class="distribution-fill distribution-fill--bus"
+                            style="width: {% widthratio today_report.total_buses today_count 100 %}%"></div>
+                    </div>
+                    <span class="distribution-item__count">{{ today_report.total_buses }}</span>
+                </div>
+                <div class="distribution-item">
+                    <div class="distribution-item__label">
+                        <span class="dot dot--motorcycle"></span> Motorcycles
+                    </div>
+                    <div class="distribution-item__bar">
+                        <div class="distribution-fill distribution-fill--motorcycle"
+                            style="width: {% widthratio today_report.total_motorcycles today_count 100 %}%"></div>
+                    </div>
+                    <span class="distribution-item__count">{{ today_report.total_motorcycles }}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    function takeSnapshot() {
+        const btn = document.getElementById('btn-snapshot');
+        btn.classList.add('loading');
+        btn.disabled = true;
+
+        fetch('{% url "vehicles:snapshot" %}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'source=0'
+        })
+            .then(r => r.json())
+            .then(data => {
+                btn.classList.remove('loading');
+                btn.disabled = false;
+                if (data.success && data.detections.length > 0) {
+                    alert(`Detected ${data.detections.length} vehicle(s)!\n` +
+                        data.detections.map(d => `${d.plate} (${d.type})`).join('\n'));
+                    location.reload();
+                } else {
+                    alert('Snapshot captured. No plates detected in this frame.');
+                }
+            })
+            .catch(err => {
+                btn.classList.remove('loading');
+                btn.disabled = false;
+                alert('Error: ' + err.message);
+            });
+    }
+
+    // Auto-refresh stats every 10 seconds
+    setInterval(() => {
+        fetch('{% url "vehicles:api_stats" %}')
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('today-total').textContent = data.today_total;
+                document.getElementById('today-unique').textContent = data.today_unique;
+            });
+    }, 10000);
+</script>
+{% endblock %}

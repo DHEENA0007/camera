@@ -1,0 +1,10 @@
+django>=4.2
+opencv-python-headless>=4.8
+easyocr>=1.7
+ultralytics>=8.0
+pillow>=10.0
+numpy>=1.24
+PyYAML>=6.0
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch --index-url https://download.pytorch.org/whl/cpu
+torchvision --index-url https://download.pytorch.org/whl/cpu

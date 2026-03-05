@@ -1,0 +1,178 @@
+{% extends "vehicles/base.html" %}
+{% load static %}
+
+{% block title %}Daily Records - CCTV Vehicle Monitor{% endblock %}
+{% block page_title %}Daily Records{% endblock %}
+
+{% block content %}
+<div class="records-container">
+    <!-- Date Selector & Summary -->
+    <div class="records-header">
+        <div class="date-selector">
+            <button class="btn btn--ghost" id="btn-prev-day" onclick="changeDate(-1)">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="15 18 9 12 15 6" />
+                </svg>
+            </button>
+            <input type="date" id="date-picker" class="date-input" value="{{ selected_date|date:'Y-m-d' }}"
+                onchange="goToDate(this.value)">
+            <button class="btn btn--ghost" id="btn-next-day" onclick="changeDate(1)">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="9 18 15 12 9 6" />
+                </svg>
+            </button>
+            <button class="btn btn--primary btn--sm" onclick="goToDate('{% now 'Y-m-d' %}')">Today</button>
+        </div>
+
+        <div class="records-summary-cards">
+            <div class="summary-card" id="summary-total">
+                <span class="summary-card__value">{{ total_count }}</span>
+                <span class="summary-card__label">Total Vehicles</span>
+            </div>
+            <div class="summary-card" id="summary-unique">
+                <span class="summary-card__value">{{ unique_plates }}</span>
+                <span class="summary-card__label">Unique Plates</span>
+            </div>
+            {% if report %}
+            <div class="summary-card" id="summary-cars">
+                <span class="summary-card__value">{{ report.total_cars }}</span>
+                <span class="summary-card__label">Cars</span>
+            </div>
+            <div class="summary-card" id="summary-trucks">
+                <span class="summary-card__value">{{ report.total_trucks }}</span>
+                <span class="summary-card__label">Trucks</span>
+            </div>
+            <div class="summary-card" id="summary-bikes">
+                <span class="summary-card__value">{{ report.total_motorcycles }}</span>
+                <span class="summary-card__label">Motorcycles</span>
+            </div>
+            <div class="summary-card" id="summary-buses">
+                <span class="summary-card__value">{{ report.total_buses }}</span>
+                <span class="summary-card__label">Buses</span>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Records Table -->
+    <div class="card" id="records-table-card">
+        <div class="card__header">
+            <h2 class="card__title">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                </svg>
+                Vehicle Records — {{ selected_date|date:"F j, Y" }}
+            </h2>
+            <span class="record-count-badge">{{ total_count }} records</span>
+        </div>
+        <div class="card__body">
+            {% if records %}
+            <div class="table-wrapper">
+                <table class="data-table" id="records-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>License Plate</th>
+                            <th>Vehicle Type</th>
+                            <th>Confidence</th>
+                            <th>Time Detected</th>
+                            <th>Image</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for record in records %}
+                        <tr class="table-row" data-id="{{ record.id }}">
+                            <td class="td-index">{{ forloop.counter }}</td>
+                            <td>
+                                <span class="plate-badge">{{ record.license_plate }}</span>
+                            </td>
+                            <td>
+                                <span class="type-badge type-badge--{{ record.vehicle_type }}">
+                                    {{ record.get_vehicle_type_display }}
+                                </span>
+                            </td>
+                            <td>
+                                <div class="confidence-inline">
+                                    <div class="confidence-bar-sm">
+                                        <div class="confidence-bar-sm__fill"
+                                            style="width: {{ record.confidence|floatformat:0 }}%"></div>
+                                    </div>
+                                    <span>{{ record.confidence|floatformat:1 }}%</span>
+                                </div>
+                            </td>
+                            <td class="td-time">{{ record.detected_at|date:"H:i:s" }}</td>
+                            <td>
+                                {% if record.captured_image %}
+                                <a href="{{ record.captured_image.url }}" target="_blank" class="img-link">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                                        <circle cx="8.5" cy="8.5" r="1.5" />
+                                        <polyline points="21 15 16 10 5 21" />
+                                    </svg>
+                                    View
+                                </a>
+                                {% else %}
+                                <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="empty-state">
+                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                    opacity="0.3">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                </svg>
+                <h3>No Records Found</h3>
+                <p>No vehicles were detected on {{ selected_date|date:"F j, Y" }}</p>
+                <a href="{% url 'vehicles:live_feed' %}" class="btn btn--primary">Start Detection →</a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Report History -->
+    <div class="card" id="history-card">
+        <div class="card__header">
+            <h3 class="card__title">Report History</h3>
+        </div>
+        <div class="card__body">
+            {% if all_reports %}
+            <div class="report-history-list">
+                {% for rpt in all_reports %}
+                <a href="?date={{ rpt.date|date:'Y-m-d' }}"
+                    class="report-history-item {% if rpt.date == selected_date %}active{% endif %}">
+                    <span class="report-date">{{ rpt.date|date:"M d, Y" }}</span>
+                    <span class="report-count">{{ rpt.total_vehicles }} vehicles</span>
+                </a>
+                {% endfor %}
+            </div>
+            {% else %}
+            <p class="text-muted text-center">No reports available</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    function changeDate(delta) {
+        const picker = document.getElementById('date-picker');
+        const currentDate = new Date(picker.value);
+        currentDate.setDate(currentDate.getDate() + delta);
+        const newDate = currentDate.toISOString().split('T')[0];
+        goToDate(newDate);
+    }
+
+    function goToDate(dateStr) {
+        window.location.href = `{% url 'vehicles:daily_records' %}?date=${dateStr}`;
+    }
+</script>
+{% endblock %}
