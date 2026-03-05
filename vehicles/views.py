@@ -420,10 +420,46 @@ def camera_scan(request):
     if request.method != 'POST':
         return JsonResponse({'error': 'POST required'}, status=405)
 
-    scan_type = request.POST.get('scan_type', 'all')  # 'wifi', 'ethernet', 'all'
+    scan_type = request.POST.get('scan_type', 'all')  # 'wifi', 'ethernet', 'usb', 'all'
+
+    if scan_type == 'usb':
+        discovered = []
+        import glob
+        video_devices = sorted(glob.glob('/dev/video*'))
+        for dev in video_devices:
+            try:
+                index = int(dev.replace('/dev/video', ''))
+                name = f"USB Camera {index}"
+                try:
+                    res = subprocess.run(['v4l2-ctl', '-d', dev, '--info'], capture_output=True, text=True, timeout=1)
+                    if res.returncode == 0:
+                        for line in res.stdout.split('\n'):
+                            if "Card type" in line:
+                                name = line.split(':', 1)[1].strip()
+                                break
+                except Exception:
+                    pass
+                discovered.append({
+                    'ip': str(index),  # Using 'ip' field to hold the device index
+                    'hostname': '',
+                    'camera_type': 'USB Camera',
+                    'open_ports': [],
+                    'suggested_port': '',
+                    'stream_path': name, # Using 'stream_path' to hold the friendly name
+                    'is_usb': True
+                })
+            except ValueError:
+                pass
+        
+        return JsonResponse({
+            'success': True,
+            'cameras': discovered,
+            'subnets_scanned': [],
+            'total_hosts_checked': len(video_devices),
+            'cameras_found': len(discovered),
+        })
 
     # Common camera ports to probe
-    CAMERA_PORTS = [554, 80, 8080, 8554, 443, 8888, 37777, 34567]
 
     def get_local_subnets():
         """Get local network subnets from ip command."""

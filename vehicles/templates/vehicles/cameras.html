@@ -1328,7 +1328,7 @@
 
             const type = this.dataset.type;
             const isNetwork = type !== 'usb';
-            const showScan = (type === 'wifi' || type === 'ethernet');
+            const showScan = (type === 'wifi' || type === 'ethernet' || type === 'usb');
 
             document.getElementById('settings-usb').style.display = isNetwork ? 'none' : 'block';
             document.getElementById('settings-network').style.display = isNetwork ? 'block' : 'none';
@@ -1336,7 +1336,10 @@
 
             // Update scan label
             if (showScan) {
-                const label = type === 'wifi' ? 'WiFi' : 'Ethernet';
+                let label = 'Network';
+                if (type === 'wifi') label = 'WiFi';
+                if (type === 'ethernet') label = 'Ethernet';
+                if (type === 'usb') label = 'USB';
                 document.getElementById('scan-conn-type-label').textContent = label;
             }
 
@@ -1401,8 +1404,20 @@
                 }
 
                 const isNetwork = type !== 'usb';
+                const showScan = (type === 'wifi' || type === 'ethernet' || type === 'usb');
+
                 document.getElementById('settings-usb').style.display = isNetwork ? 'none' : 'block';
                 document.getElementById('settings-network').style.display = isNetwork ? 'block' : 'none';
+                document.getElementById('settings-scan').style.display = showScan ? 'block' : 'none';
+
+                // Update scan label
+                if (showScan) {
+                    let label = 'Network';
+                    if (type === 'wifi') label = 'WiFi';
+                    if (type === 'ethernet') label = 'Ethernet';
+                    if (type === 'usb') label = 'USB';
+                    document.getElementById('scan-conn-type-label').textContent = label;
+                }
 
                 document.getElementById('camera-modal').style.display = 'flex';
             });
@@ -1525,7 +1540,7 @@
 
         // Show scanning state
         scanBtn.classList.add('scanning');
-        scanBtnText.textContent = 'Scanning...';
+        scanBtnText.textContent = scanType === 'usb' ? 'Scanning USB...' : 'Scanning...';
         scanStatus.style.display = 'block';
         scanResults.style.display = 'none';
         scanError.style.display = 'none';
@@ -1630,27 +1645,46 @@
         const streamPath = element.getAttribute('data-stream-path');
         const cameraType = element.getAttribute('data-camera-type');
 
-        document.getElementById('cam-ip').value = ip;
-        document.getElementById('cam-port').value = port;
-        document.getElementById('cam-stream-path').value = streamPath;
+        if (cameraType === 'USB Camera') {
+            document.getElementById('cam-source').value = ip; // We use 'ip' to store index
 
-        // Auto-fill camera name if empty
-        const nameField = document.getElementById('cam-name');
-        if (!nameField.value) {
-            nameField.value = `${cameraType} - ${ip}`;
+            // Auto-fill camera name if empty
+            const nameField = document.getElementById('cam-name');
+            if (!nameField.value) {
+                nameField.value = streamPath; // We use 'stream_path' to store device name
+            }
+
+            // Briefly highlight USB settings
+            const usbSection = document.getElementById('settings-usb');
+            usbSection.style.transition = 'box-shadow 0.3s ease';
+            usbSection.style.boxShadow = '0 0 0 2px var(--accent-primary), 0 0 16px rgba(99, 102, 241, 0.3)';
+            usbSection.style.borderRadius = 'var(--radius-md)';
+            setTimeout(() => {
+                usbSection.style.boxShadow = '';
+            }, 2000);
+            usbSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+        } else {
+            document.getElementById('cam-ip').value = ip;
+            document.getElementById('cam-port').value = port;
+            document.getElementById('cam-stream-path').value = streamPath;
+
+            // Auto-fill camera name if empty
+            const nameField = document.getElementById('cam-name');
+            if (!nameField.value) {
+                nameField.value = `${cameraType} - ${ip}`;
+            }
+
+            // Briefly highlight network settings
+            const networkSection = document.getElementById('settings-network');
+            networkSection.style.transition = 'box-shadow 0.3s ease';
+            networkSection.style.boxShadow = '0 0 0 2px var(--accent-primary), 0 0 16px rgba(99, 102, 241, 0.3)';
+            networkSection.style.borderRadius = 'var(--radius-md)';
+            setTimeout(() => {
+                networkSection.style.boxShadow = '';
+            }, 2000);
+            networkSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
-
-        // Briefly highlight the network settings to show they were filled
-        const networkSection = document.getElementById('settings-network');
-        networkSection.style.transition = 'box-shadow 0.3s ease';
-        networkSection.style.boxShadow = '0 0 0 2px var(--accent-primary), 0 0 16px rgba(99, 102, 241, 0.3)';
-        networkSection.style.borderRadius = 'var(--radius-md)';
-        setTimeout(() => {
-            networkSection.style.boxShadow = '';
-        }, 2000);
-
-        // Scroll to network settings
-        networkSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
     // Close modal on overlay click
