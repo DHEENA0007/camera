@@ -192,11 +192,18 @@
                         {% if cam.connection_type == 'usb' %}
                         <span class="detail-item">Device: {{ cam.source }}</span>
                         {% else %}
-                        <span class="detail-item">IP: {{ cam.ip_address }}{% if cam.port %}:{{ cam.port }}{% endif %}</span>
+                        <span class="detail-item">
+                            IP: {{ cam.ip_address }}
+                            {% if cam.port %}:{{ cam.port }}{% endif %}
+                        </span>
                         {% endif %}
                         <span class="detail-item">{{ cam.resolution }} @ {{ cam.fps }}fps</span>
                         {% if cam.detection_enabled %}
-                        <span class="detail-item detail-item--detect"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Detection ON</span>
+                        <span class="detail-item detail-item--detect"><svg width="12" height="12" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="11" cy="11" r="8" />
+                                <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                            </svg> Detection ON</span>
                         {% endif %}
                     </div>
                 </div>
@@ -355,6 +362,74 @@
                         <input type="text" id="cam-source" name="source" class="text-input" value="0"
                             placeholder="0, 1, 2...">
                         <span class="form-help">Usually 0 for built-in webcam, 1 for external USB camera</span>
+                    </div>
+                </div>
+
+                <!-- Auto-Detect Section (shown for WiFi/Ethernet) -->
+                <div class="form-section conn-settings" id="settings-scan" style="display:none;">
+                    <h4 class="form-section__title">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <circle cx="11" cy="11" r="8" />
+                            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                        </svg>
+                        Auto-Detect Cameras on Network
+                    </h4>
+                    <div class="scan-panel">
+                        <div class="scan-panel__info">
+                            <p>Scan your local network to automatically discover IP cameras connected via <span
+                                    id="scan-conn-type-label">WiFi/Ethernet</span>.</p>
+                        </div>
+                        <div class="scan-panel__actions">
+                            <button type="button" class="btn btn--primary btn--scan" id="btn-scan-network"
+                                onclick="scanNetwork()">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <path d="M1.42 9a16 16 0 0 1 21.16 0" />
+                                    <path d="M5 12.55a11 11 0 0 1 14.08 0" />
+                                    <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
+                                    <circle cx="12" cy="20" r="1" />
+                                </svg>
+                                <span id="scan-btn-text">Scan Network</span>
+                            </button>
+                        </div>
+                        <div id="scan-status" class="scan-status" style="display:none;">
+                            <div class="scan-radar">
+                                <div class="scan-radar__ring"></div>
+                                <div class="scan-radar__ring scan-radar__ring--2"></div>
+                                <div class="scan-radar__ring scan-radar__ring--3"></div>
+                                <div class="scan-radar__dot"></div>
+                            </div>
+                            <p class="scan-status__text">Scanning network...</p>
+                            <p class="scan-status__sub">This may take 15-30 seconds</p>
+                        </div>
+                        <div id="scan-results" class="scan-results" style="display:none;">
+                            <div class="scan-results__header">
+                                <span class="scan-results__count" id="scan-count">0 cameras found</span>
+                                <button type="button" class="btn btn--ghost btn--sm" onclick="scanNetwork()">
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <polyline points="23 4 23 10 17 10" />
+                                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                                    </svg>
+                                    Re-scan
+                                </button>
+                            </div>
+                            <div class="scan-results__list" id="scan-results-list">
+                                <!-- Filled dynamically -->
+                            </div>
+                        </div>
+                        <div id="scan-error" class="scan-error" style="display:none;">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <circle cx="12" cy="12" r="10" />
+                                <line x1="15" y1="9" x2="9" y2="15" />
+                                <line x1="9" y1="9" x2="15" y2="15" />
+                            </svg>
+                            <p id="scan-error-text">No cameras found on the network.</p>
+                            <span class="form-help">Make sure the camera is powered on and connected to the same
+                                network.</span>
+                        </div>
                     </div>
                 </div>
 
@@ -977,6 +1052,253 @@
         word-break: break-all;
     }
 
+    /* Scan Panel */
+    .scan-panel {
+        background: var(--bg-input);
+        border: 1px dashed var(--border-color);
+        border-radius: var(--radius-md);
+        padding: 20px;
+    }
+
+    .scan-panel__info p {
+        font-size: 0.82rem;
+        color: var(--text-secondary);
+        margin-bottom: 14px;
+    }
+
+    .scan-panel__info span {
+        font-weight: 600;
+        color: var(--accent-primary-light);
+    }
+
+    .scan-panel__actions {
+        text-align: center;
+        margin-bottom: 8px;
+    }
+
+    .btn--scan {
+        gap: 8px;
+        padding: 10px 28px;
+        font-size: 0.9rem;
+    }
+
+    .btn--scan.scanning {
+        pointer-events: none;
+        opacity: 0.7;
+    }
+
+    .btn--scan.scanning svg {
+        animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+        from {
+            transform: rotate(0deg);
+        }
+
+        to {
+            transform: rotate(360deg);
+        }
+    }
+
+    /* Scan Status / Radar */
+    .scan-status {
+        text-align: center;
+        padding: 24px 0;
+    }
+
+    .scan-radar {
+        position: relative;
+        width: 80px;
+        height: 80px;
+        margin: 0 auto 16px;
+    }
+
+    .scan-radar__ring {
+        position: absolute;
+        inset: 0;
+        border: 2px solid var(--accent-primary);
+        border-radius: 50%;
+        opacity: 0;
+        animation: radar-pulse 2s ease-out infinite;
+    }
+
+    .scan-radar__ring--2 {
+        animation-delay: 0.5s;
+    }
+
+    .scan-radar__ring--3 {
+        animation-delay: 1s;
+    }
+
+    .scan-radar__dot {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 12px;
+        height: 12px;
+        margin: -6px 0 0 -6px;
+        background: var(--accent-primary);
+        border-radius: 50%;
+        box-shadow: 0 0 12px var(--accent-primary);
+        animation: dot-pulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes radar-pulse {
+        0% {
+            transform: scale(0.3);
+            opacity: 0.8;
+        }
+
+        100% {
+            transform: scale(1.2);
+            opacity: 0;
+        }
+    }
+
+    @keyframes dot-pulse {
+
+        0%,
+        100% {
+            transform: scale(1);
+        }
+
+        50% {
+            transform: scale(1.3);
+        }
+    }
+
+    .scan-status__text {
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: var(--text-primary);
+    }
+
+    .scan-status__sub {
+        font-size: 0.75rem;
+        color: var(--text-muted);
+        margin-top: 4px;
+    }
+
+    /* Scan Results */
+    .scan-results__header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+    }
+
+    .scan-results__count {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: var(--accent-success);
+    }
+
+    .scan-results__list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        max-height: 200px;
+        overflow-y: auto;
+    }
+
+    .scan-cam-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 14px;
+        background: var(--bg-card);
+        border: 2px solid var(--border-color);
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        transition: all var(--transition-fast);
+    }
+
+    .scan-cam-item:hover {
+        border-color: var(--accent-primary-glow-strong);
+        transform: translateX(4px);
+    }
+
+    .scan-cam-item.selected {
+        border-color: var(--accent-primary);
+        background: var(--accent-primary-glow);
+    }
+
+    .scan-cam-item__icon {
+        width: 40px;
+        height: 40px;
+        border-radius: var(--radius-md);
+        background: rgba(16, 185, 129, 0.15);
+        color: var(--accent-success);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+
+    .scan-cam-item__info {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .scan-cam-item__ip {
+        font-size: 0.9rem;
+        font-weight: 600;
+        font-family: 'JetBrains Mono', monospace;
+        color: var(--text-primary);
+    }
+
+    .scan-cam-item__type {
+        font-size: 0.72rem;
+        color: var(--text-muted);
+        margin-top: 2px;
+    }
+
+    .scan-cam-item__ports {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+    }
+
+    .scan-cam-item__port-tag {
+        font-size: 0.62rem;
+        font-weight: 600;
+        padding: 2px 6px;
+        border-radius: 3px;
+        background: rgba(99, 102, 241, 0.15);
+        color: var(--accent-primary-light);
+        font-family: 'JetBrains Mono', monospace;
+    }
+
+    .scan-cam-item__select-badge {
+        font-size: 0.7rem;
+        font-weight: 600;
+        color: var(--accent-primary);
+        white-space: nowrap;
+    }
+
+    .scan-cam-item.selected .scan-cam-item__select-badge {
+        color: var(--accent-success);
+    }
+
+    /* Scan Error */
+    .scan-error {
+        text-align: center;
+        padding: 20px;
+        color: var(--text-muted);
+    }
+
+    .scan-error svg {
+        color: var(--accent-warning);
+        margin-bottom: 8px;
+    }
+
+    .scan-error p {
+        font-size: 0.85rem;
+        font-weight: 500;
+        margin-bottom: 4px;
+    }
+
     @media (max-width: 768px) {
         .connection-type-selector {
             grid-template-columns: repeat(3, 1fr);
@@ -1006,9 +1328,17 @@
 
             const type = this.dataset.type;
             const isNetwork = type !== 'usb';
+            const showScan = (type === 'wifi' || type === 'ethernet');
 
             document.getElementById('settings-usb').style.display = isNetwork ? 'none' : 'block';
             document.getElementById('settings-network').style.display = isNetwork ? 'block' : 'none';
+            document.getElementById('settings-scan').style.display = showScan ? 'block' : 'none';
+
+            // Update scan label
+            if (showScan) {
+                const label = type === 'wifi' ? 'WiFi' : 'Ethernet';
+                document.getElementById('scan-conn-type-label').textContent = label;
+            }
 
             // Set default port
             if (type === 'rtsp' || type === 'wifi' || type === 'ethernet' || type === 'onvif') {
@@ -1025,6 +1355,12 @@
         document.getElementById('camera-form').reset();
         document.getElementById('settings-usb').style.display = 'block';
         document.getElementById('settings-network').style.display = 'none';
+        document.getElementById('settings-scan').style.display = 'none';
+        // Reset scan state
+        document.getElementById('scan-status').style.display = 'none';
+        document.getElementById('scan-results').style.display = 'none';
+        document.getElementById('scan-error').style.display = 'none';
+        document.getElementById('btn-scan-network').style.display = '';
         document.querySelectorAll('.conn-type-option').forEach(o => o.classList.remove('active'));
         document.querySelector('.conn-type-option[data-type="usb"]').classList.add('active');
         document.querySelector('.conn-type-option[data-type="usb"] input').checked = true;
@@ -1171,6 +1507,150 @@
                 btn.disabled = false;
                 resultContent.innerHTML = `<div class="test-result"><p class="test-error">❌ Error: ${err.message}</p></div>`;
             });
+    }
+
+    // ===========================
+    // Network Camera Auto-Detect
+    // ===========================
+    function scanNetwork() {
+        const scanBtn = document.getElementById('btn-scan-network');
+        const scanStatus = document.getElementById('scan-status');
+        const scanResults = document.getElementById('scan-results');
+        const scanError = document.getElementById('scan-error');
+        const scanBtnText = document.getElementById('scan-btn-text');
+
+        // Get current connection type for scan context
+        const activeType = document.querySelector('.conn-type-option.active');
+        const scanType = activeType ? activeType.dataset.type : 'all';
+
+        // Show scanning state
+        scanBtn.classList.add('scanning');
+        scanBtnText.textContent = 'Scanning...';
+        scanStatus.style.display = 'block';
+        scanResults.style.display = 'none';
+        scanError.style.display = 'none';
+
+        const formData = new FormData();
+        formData.append('scan_type', scanType);
+
+        fetch('{% url "vehicles:camera_scan" %}', {
+            method: 'POST',
+            body: formData,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        })
+            .then(r => r.json())
+            .then(data => {
+                scanBtn.classList.remove('scanning');
+                scanBtnText.textContent = 'Scan Network';
+                scanStatus.style.display = 'none';
+
+                if (data.success && data.cameras && data.cameras.length > 0) {
+                    // Show results
+                    scanResults.style.display = 'block';
+                    scanError.style.display = 'none';
+                    document.getElementById('scan-count').textContent =
+                        `${data.cameras.length} camera${data.cameras.length > 1 ? 's' : ''} found`;
+
+                    const list = document.getElementById('scan-results-list');
+                    list.innerHTML = '';
+
+                    data.cameras.forEach((cam, idx) => {
+                        const portsHtml = cam.open_ports.map(p =>
+                            `<span class="scan-cam-item__port-tag">${p}</span>`
+                        ).join('');
+
+                        const hostnameLabel = cam.hostname ? ` (${cam.hostname})` : '';
+
+                        const item = document.createElement('div');
+                        item.className = 'scan-cam-item';
+                        item.setAttribute('data-ip', cam.ip);
+                        item.setAttribute('data-port', cam.suggested_port);
+                        item.setAttribute('data-stream-path', cam.stream_path);
+                        item.setAttribute('data-camera-type', cam.camera_type);
+                        item.onclick = function () { selectScanResult(this); };
+
+                        item.innerHTML = `
+                        <div class="scan-cam-item__icon">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                                <circle cx="12" cy="13" r="4"/>
+                            </svg>
+                        </div>
+                        <div class="scan-cam-item__info">
+                            <div class="scan-cam-item__ip">${cam.ip}${hostnameLabel}</div>
+                            <div class="scan-cam-item__type">${cam.camera_type}</div>
+                            <div class="scan-cam-item__ports">${portsHtml}</div>
+                        </div>
+                        <div class="scan-cam-item__select-badge">Select →</div>
+                    `;
+
+                        list.appendChild(item);
+                    });
+
+                    // Show scan info
+                    if (data.subnets_scanned) {
+                        const infoText = document.querySelector('.scan-panel__info p');
+                        infoText.innerHTML = `Found <span>${data.cameras_found}</span> cameras across ${data.subnets_scanned.length} subnet(s). Click a camera to auto-fill its details.`;
+                    }
+                } else {
+                    // No cameras found
+                    scanResults.style.display = 'none';
+                    scanError.style.display = 'block';
+                    if (data.error) {
+                        document.getElementById('scan-error-text').textContent = data.error;
+                    } else {
+                        document.getElementById('scan-error-text').textContent =
+                            `No cameras found. Scanned ${data.total_hosts_checked || 0} hosts.`;
+                    }
+                }
+            })
+            .catch(err => {
+                scanBtn.classList.remove('scanning');
+                scanBtnText.textContent = 'Scan Network';
+                scanStatus.style.display = 'none';
+                scanError.style.display = 'block';
+                document.getElementById('scan-error-text').textContent = 'Scan failed: ' + err.message;
+            });
+    }
+
+    function selectScanResult(element) {
+        // Remove previous selection
+        document.querySelectorAll('.scan-cam-item').forEach(item => {
+            item.classList.remove('selected');
+            item.querySelector('.scan-cam-item__select-badge').textContent = 'Select →';
+        });
+
+        // Select this one
+        element.classList.add('selected');
+        element.querySelector('.scan-cam-item__select-badge').textContent = '✓ Selected';
+
+        // Auto-fill form fields
+        const ip = element.getAttribute('data-ip');
+        const port = element.getAttribute('data-port');
+        const streamPath = element.getAttribute('data-stream-path');
+        const cameraType = element.getAttribute('data-camera-type');
+
+        document.getElementById('cam-ip').value = ip;
+        document.getElementById('cam-port').value = port;
+        document.getElementById('cam-stream-path').value = streamPath;
+
+        // Auto-fill camera name if empty
+        const nameField = document.getElementById('cam-name');
+        if (!nameField.value) {
+            nameField.value = `${cameraType} - ${ip}`;
+        }
+
+        // Briefly highlight the network settings to show they were filled
+        const networkSection = document.getElementById('settings-network');
+        networkSection.style.transition = 'box-shadow 0.3s ease';
+        networkSection.style.boxShadow = '0 0 0 2px var(--accent-primary), 0 0 16px rgba(99, 102, 241, 0.3)';
+        networkSection.style.borderRadius = 'var(--radius-md)';
+        setTimeout(() => {
+            networkSection.style.boxShadow = '';
+        }, 2000);
+
+        // Scroll to network settings
+        networkSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
     // Close modal on overlay click

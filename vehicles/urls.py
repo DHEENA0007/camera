@@ -16,6 +16,7 @@ urlpatterns = [
     path('cameras/<int:camera_id>/delete/', views.camera_delete, name='camera_delete'),
     path('cameras/<int:camera_id>/toggle/', views.camera_toggle, name='camera_toggle'),
     path('cameras/<int:camera_id>/test/', views.camera_test, name='camera_test'),
+    path('cameras/scan/', views.camera_scan, name='camera_scan'),
 
     # Streaming endpoints
     path('stream/video/', views.video_stream, name='video_stream'),

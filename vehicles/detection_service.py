@@ -72,7 +72,14 @@ class CameraStream:
         except (ValueError, TypeError):
             src = self.source  # RTSP URL
 
-        self.cap = cv2.VideoCapture(src)
+        # For RTSP streams, try to force TCP transport via environment variable
+        # This helps with many IP cameras that fail on UDP
+        if isinstance(src, str) and src.startswith('rtsp://'):
+            os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp'
+            self.cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+        else:
+            self.cap = cv2.VideoCapture(src)
+
         if not self.cap.isOpened():
             logger.error(f"Cannot open camera source: {src}")
             return False

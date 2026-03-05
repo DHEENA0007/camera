@@ -1,6 +1,10 @@
 import json
 import cv2
 import base64
+import socket
+import subprocess
+import threading
+import ipaddress
 from datetime import date, timedelta
 from django.shortcuts import render, redirect, get_object_or_404
 from django.http import StreamingHttpResponse, JsonResponse
@@ -364,7 +368,14 @@ def camera_test(request, camera_id):
         error_msg = ""
 
         try:
-            cap = cv2.VideoCapture(source)
+            # Force TCP for RTSP streams to avoid UDP timeout issues
+            if isinstance(source, str) and source.startswith('rtsp://'):
+                import os
+                os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp'
+                cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+            else:
+                cap = cv2.VideoCapture(source)
+
             if cap.isOpened():
                 ret, frame = cap.read()
                 if ret:
@@ -401,4 +412,223 @@ def camera_test(request, camera_id):
         })
 
     return JsonResponse({'error': 'POST required'}, status=405)
+
+
+@csrf_exempt
+def camera_scan(request):
+    """Scan the network for cameras (auto-detect)."""
+    if request.method != 'POST':
+        return JsonResponse({'error': 'POST required'}, status=405)
+
+    scan_type = request.POST.get('scan_type', 'all')  # 'wifi', 'ethernet', 'all'
+
+    # Common camera ports to probe
+    CAMERA_PORTS = [554, 80, 8080, 8554, 443, 8888, 37777, 34567]
+
+    def get_local_subnets():
+        """Get local network subnets from ip command."""
+        subnets = []
+        try:
+            result = subprocess.run(
+                ['ip', '-4', 'addr', 'show'],
+                capture_output=True, text=True, timeout=5
+            )
+            import re
+            for match in re.finditer(r'inet (\d+\.\d+\.\d+\.\d+)/(\d+)', result.stdout):
+                ip_str, prefix = match.group(1), int(match.group(2))
+                if ip_str.startswith('127.'):
+                    continue
+                try:
+                    network = ipaddress.IPv4Network(f"{ip_str}/{prefix}", strict=False)
+                    subnets.append({
+                        'network': str(network),
+                        'ip': ip_str,
+                        'interface': 'unknown'
+                    })
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return subnets
+
+    def get_arp_hosts():
+        """Read ARP table to find known hosts."""
+        hosts = set()
+        try:
+            with open('/proc/net/arp', 'r') as f:
+                lines = f.readlines()[1:]  # Skip header
+                for line in lines:
+                    parts = line.split()
+                    if len(parts) >= 4 and parts[2] != '0x0':
+                        ip = parts[0]
+                        if not ip.startswith('127.'):
+                            hosts.add(ip)
+        except Exception:
+            pass
+        return hosts
+
+    def ping_sweep(subnet_str, timeout=1):
+        """Quick ping sweep to populate ARP table."""
+        try:
+            network = ipaddress.IPv4Network(subnet_str, strict=False)
+            # Only sweep /24 or smaller to avoid huge scans
+            if network.prefixlen < 24:
+                network = ipaddress.IPv4Network(
+                    f"{str(network.network_address).rsplit('.', 1)[0]}.0/24",
+                    strict=False
+                )
+
+            threads = []
+            for host in list(network.hosts())[:254]:
+                t = threading.Thread(
+                    target=lambda h: subprocess.run(
+                        ['ping', '-c', '1', '-W', '1', str(h)],
+                        capture_output=True, timeout=3
+                    ),
+                    args=(host,)
+                )
+                t.daemon = True
+                threads.append(t)
+
+            # Run in batches of 50
+            for i in range(0, len(threads), 50):
+                batch = threads[i:i+50]
+                for t in batch:
+                    t.start()
+                for t in batch:
+                    t.join(timeout=3)
+        except Exception:
+            pass
+
+    def probe_port(ip, port, timeout=1.5):
+        """Check if a port is open on the given IP."""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            result = sock.connect_ex((ip, port))
+            sock.close()
+            return result == 0
+        except Exception:
+            return False
+
+    def identify_camera(ip, open_ports):
+        """Try to identify camera type based on open ports."""
+        camera_type = 'IP Camera'
+        stream_path = '/stream1'
+        suggested_port = 554
+
+        if 554 in open_ports or 8554 in open_ports:
+            camera_type = 'RTSP Camera'
+            suggested_port = 554 if 554 in open_ports else 8554
+            stream_path = '/stream1'
+        elif 80 in open_ports or 8080 in open_ports:
+            camera_type = 'HTTP/Web Camera'
+            suggested_port = 80 if 80 in open_ports else 8080
+            stream_path = '/video'
+        elif 37777 in open_ports:
+            camera_type = 'Dahua Camera'
+            suggested_port = 554
+            stream_path = '/cam/realmonitor?channel=1&subtype=0'
+        elif 34567 in open_ports:
+            camera_type = 'XMEye Camera'
+            suggested_port = 554
+            stream_path = '/user=admin&password=&channel=1&stream=0.sdp'
+
+        # Try to get hostname
+        hostname = ''
+        try:
+            hostname = socket.gethostbyaddr(ip)[0]
+        except Exception:
+            pass
+
+        return {
+            'ip': ip,
+            'hostname': hostname,
+            'camera_type': camera_type,
+            'open_ports': sorted(open_ports),
+            'suggested_port': suggested_port,
+            'stream_path': stream_path,
+        }
+
+    # --- Main scan logic ---
+    discovered = []
+    subnets = get_local_subnets()
+
+    if not subnets:
+        return JsonResponse({
+            'success': False,
+            'error': 'No network interfaces found.',
+            'cameras': []
+        })
+
+    # Filter subnets based on scan type
+    if scan_type == 'ethernet':
+        # Prefer 192.168.x.x subnets on ethernet
+        eth_subnets = [s for s in subnets if '192.168.' in s['ip'] or '10.' in s['ip']]
+        if eth_subnets:
+            subnets = eth_subnets
+    elif scan_type == 'wifi':
+        pass  # Scan all subnets
+
+    # Step 1: Ping sweep to populate ARP table
+    for subnet_info in subnets[:3]:  # Limit to 3 subnets max
+        ping_sweep(subnet_info['network'])
+
+    # Step 2: Get all known hosts from ARP
+    all_hosts = get_arp_hosts()
+
+    # Also add common default camera IPs
+    common_camera_ips = [
+        '192.168.1.1', '192.168.1.10', '192.168.1.64', '192.168.1.100',
+        '192.168.1.108', '192.168.1.168', '192.168.0.10', '192.168.0.64',
+        '192.168.0.100', '192.168.0.108',
+    ]
+    for ip in common_camera_ips:
+        all_hosts.add(ip)
+
+    # Get own IPs to exclude
+    own_ips = {s['ip'] for s in subnets}
+
+    # Step 3: Probe camera ports on discovered hosts
+    scan_results = {}
+    probe_threads = []
+
+    def probe_host(ip):
+        open_ports = []
+        for port in CAMERA_PORTS:
+            if probe_port(ip, port):
+                open_ports.append(port)
+        if open_ports:
+            scan_results[ip] = open_ports
+
+    hosts_to_scan = [h for h in all_hosts if h not in own_ips]
+
+    for ip in hosts_to_scan:
+        t = threading.Thread(target=probe_host, args=(ip,))
+        t.daemon = True
+        probe_threads.append(t)
+
+    # Run port probes in batches
+    for i in range(0, len(probe_threads), 30):
+        batch = probe_threads[i:i+30]
+        for t in batch:
+            t.start()
+        for t in batch:
+            t.join(timeout=5)
+
+    # Step 4: Build results
+    for ip, open_ports in scan_results.items():
+        camera_info = identify_camera(ip, open_ports)
+        discovered.append(camera_info)
+
+    # Sort by IP
+    discovered.sort(key=lambda x: [int(p) for p in x['ip'].split('.')])
+
+    return JsonResponse({
+        'success': True,
+        'cameras': discovered,
+        'subnets_scanned': [s['network'] for s in subnets[:3]],
+        'total_hosts_checked': len(hosts_to_scan),
+        'cameras_found': len(discovered),
+    })
 
