@@ -23,6 +23,7 @@ urlpatterns = [
     path('stream/detection/', views.detection_stream, name='detection_stream'),
 
     # API endpoints
+    path('api/test_image/', views.test_image_upload, name='test_image'),
     path('api/snapshot/', views.take_snapshot, name='snapshot'),
     path('api/stats/', views.api_stats, name='api_stats'),
     path('api/camera/', views.camera_control, name='camera_control'),

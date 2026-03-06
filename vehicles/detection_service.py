@@ -14,6 +14,7 @@ import os
 import re
 import logging
 import math
+import gc
 from collections import OrderedDict
 from datetime import date, datetime
 from pathlib import Path
@@ -28,40 +29,43 @@ camera_instance = None
 detection_running = False
 detection_thread = None
 
-# Lazy-loaded models
-_yolo_model = None
-_ocr_reader = None
+# Lazy-loaded OpenALPR instance
+alpr_instance = None
+alpr_lock = threading.Lock()
 
-
-def get_yolo_model():
-    """Lazy load YOLO model."""
-    global _yolo_model
-    if _yolo_model is None:
-        try:
-            from ultralytics import YOLO
-            model_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'yolov8n.pt')
-            if not os.path.exists(model_path):
-                model_path = 'yolov8n.pt'
-            _yolo_model = YOLO(model_path)
-            logger.info("YOLOv8 model loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load YOLO model: {e}")
-    return _yolo_model
-
-
-def get_ocr_reader():
-    """Lazy load EasyOCR reader."""
-    global _ocr_reader
-    if _ocr_reader is None:
-        try:
-            import easyocr
-            _ocr_reader = easyocr.Reader(['en'], gpu=False)
-            logger.info("EasyOCR reader loaded successfully")
-        except Exception as e:
-            logger.error(f"Failed to load EasyOCR: {e}")
-    return _ocr_reader
-
-
+def get_alpr():
+    """Lazy load OpenALPR engine."""
+    global alpr_instance
+    with alpr_lock:
+        if alpr_instance is None:
+            try:
+                # Direct python to load DLLs from this directory first
+                openalpr_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'openalpr-win', 'openalpr_64')
+                
+                if hasattr(os, 'add_dll_directory'):
+                    os.add_dll_directory(openalpr_dir)
+                os.environ['PATH'] = openalpr_dir + os.pathsep + os.environ.get('PATH', '')
+                
+                from openalpr import Alpr
+                
+                conf_path = os.path.join(openalpr_dir, 'openalpr.conf')
+                runtime_path = os.path.join(openalpr_dir, 'runtime_data')
+                
+                # By default, openalpr-win precompiled package has a US dataset plus maybe EU, but not IN
+                # We can request "in" if it exists, otherwise fallback to "us" if it fails.
+                # Here we attempt whatever dataset you prefer, but "us" is safely in the defaults folder usually.
+                alpr_instance = Alpr("us", conf_path, runtime_path)
+                
+                if not getattr(alpr_instance, 'loaded', getattr(alpr_instance, 'is_loaded', lambda: False)()):
+                    logger.error("Error loading OpenALPR engine. Checking for DLL footprint failure.")
+                    alpr_instance = None
+                else:
+                    alpr_instance.set_top_n(3)
+                    logger.info("OpenALPR loaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to load OpenALPR: {e}")
+                alpr_instance = False # Indicate failed load so we don't spam errors
+        return alpr_instance if alpr_instance is not False else None
 # ============================================================
 # Centroid Tracker - tracks vehicles across frames
 # ============================================================
@@ -237,22 +241,27 @@ class CameraStream:
     def _capture_loop(self):
         """Continuously capture frames."""
         while self.running:
-            ret, frame = self.cap.read()
-            if ret:
-                with self.lock:
-                    self.frame = frame.copy()
-                    self.last_frame_time = time.time()
-            else:
-                time.sleep(0.1)
-                try:
-                    src = int(self.source)
-                except (ValueError, TypeError):
-                    src = self.source
-                self.cap.release()
-                if isinstance(src, str) and src.startswith('rtsp://'):
-                    self.cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+            try:
+                ret, frame = self.cap.read()
+                if ret:
+                    with self.lock:
+                        # cap.read() returns a new array, no need to copy which saves memory
+                        self.frame = frame
+                        self.last_frame_time = time.time()
                 else:
-                    self.cap = cv2.VideoCapture(src)
+                    time.sleep(0.1)
+                    try:
+                        src = int(self.source)
+                    except (ValueError, TypeError):
+                        src = self.source
+                    self.cap.release()
+                    if isinstance(src, str) and src.startswith('rtsp://'):
+                        self.cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+                    else:
+                        self.cap = cv2.VideoCapture(src)
+            except Exception as e:
+                logger.error(f"Capture loop error: {e}")
+                time.sleep(0.5)
 
     def get_frame(self):
         """Get the latest frame."""
@@ -307,338 +316,73 @@ def generate_video_feed(source=0):
         time.sleep(0.033)
 
 
-# ============================================================
-# COCO Vehicle Classes
-# ============================================================
-
-VEHICLE_CLASSES = {
-    2: 'car',
-    3: 'motorcycle',
-    5: 'bus',
-    7: 'truck',
-}
-
-
-# ============================================================
-# License Plate Detection (Image Processing Pipeline)
-# ============================================================
-
-def detect_plate_region(vehicle_img):
-    """
-    Detect license plate region within a vehicle image using
-    image processing techniques (edge detection + contour analysis).
-    Returns list of plate candidate regions as (x, y, w, h) relative to vehicle_img.
-    """
-    if vehicle_img is None or vehicle_img.size == 0:
-        return []
-
-    h, w = vehicle_img.shape[:2]
-    if h < 20 or w < 20:
-        return []
-
-    # Focus on lower 60% of vehicle (plates are usually at bottom)
-    roi_y_start = int(h * 0.35)
-    roi = vehicle_img[roi_y_start:, :]
-
-    # Convert to grayscale
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-
-    # Apply bilateral filter to reduce noise while keeping edges sharp
-    gray = cv2.bilateralFilter(gray, 11, 17, 17)
-
-    # Apply CLAHE for contrast enhancement
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    gray = clahe.apply(gray)
-
-    # Edge detection
-    edges = cv2.Canny(gray, 30, 200)
-
-    # Dilate edges to connect nearby edges
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    edges = cv2.dilate(edges, kernel, iterations=1)
-
-    # Find contours
-    contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-    plate_candidates = []
-
-    for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:30]:
-        area = cv2.contourArea(contour)
-        if area < 500:
-            continue
-
-        # Approximate contour
-        peri = cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
-
-        x, y, cw, ch = cv2.boundingRect(contour)
-        aspect_ratio = cw / ch if ch > 0 else 0
-
-        # License plates typically have aspect ratio between 2.0 and 6.0
-        # Indian plates: ~4.5:1 ratio
-        if 1.5 <= aspect_ratio <= 7.0 and ch > 15 and cw > 60:
-            # Adjust coordinates back to full vehicle image
-            plate_candidates.append((x, y + roi_y_start, cw, ch))
-
-        # Also check for rectangular approximations (4 corners)
-        if len(approx) >= 4 and len(approx) <= 8:
-            x, y, cw, ch = cv2.boundingRect(approx)
-            aspect_ratio = cw / ch if ch > 0 else 0
-            if 1.5 <= aspect_ratio <= 7.0 and ch > 15 and cw > 60:
-                plate_candidates.append((x, y + roi_y_start, cw, ch))
-
-    # Also try morphological approach as fallback
-    if len(plate_candidates) == 0:
-        # Blackhat morphology to find dark regions on light background (plate chars)
-        rectKern = cv2.getStructuringElement(cv2.MORPH_RECT, (13, 5))
-        blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, rectKern)
-
-        # Threshold
-        _, thresh = cv2.threshold(blackhat, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-
-        # Find contours in thresholded image
-        contours2, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        for contour in sorted(contours2, key=cv2.contourArea, reverse=True)[:10]:
-            x, y, cw, ch = cv2.boundingRect(contour)
-            aspect_ratio = cw / ch if ch > 0 else 0
-            if 1.5 <= aspect_ratio <= 7.0 and ch > 10 and cw > 40:
-                plate_candidates.append((x, y + roi_y_start, cw, ch))
-
-    # Remove duplicate/overlapping candidates
-    plate_candidates = _non_max_suppression(plate_candidates)
-
-    return plate_candidates[:3]  # Return top 3 candidates
-
-
-def _non_max_suppression(boxes, overlap_thresh=0.5):
-    """Remove overlapping bounding boxes."""
-    if len(boxes) == 0:
-        return []
-
-    boxes_arr = np.array(boxes, dtype=float)
-    x1 = boxes_arr[:, 0]
-    y1 = boxes_arr[:, 1]
-    x2 = x1 + boxes_arr[:, 2]
-    y2 = y1 + boxes_arr[:, 3]
-    areas = boxes_arr[:, 2] * boxes_arr[:, 3]
-
-    idxs = np.argsort(areas)[::-1]
-    pick = []
-
-    while len(idxs) > 0:
-        i = idxs[0]
-        pick.append(i)
-
-        xx1 = np.maximum(x1[i], x1[idxs[1:]])
-        yy1 = np.maximum(y1[i], y1[idxs[1:]])
-        xx2 = np.minimum(x2[i], x2[idxs[1:]])
-        yy2 = np.minimum(y2[i], y2[idxs[1:]])
-
-        w = np.maximum(0.0, xx2 - xx1)
-        h = np.maximum(0.0, yy2 - yy1)
-
-        overlap = (w * h) / areas[idxs[1:]]
-        idxs = np.delete(idxs, np.concatenate(([0], np.where(overlap > overlap_thresh)[0] + 1)))
-
-    return [boxes[i] for i in pick]
-
-
-def preprocess_plate_for_ocr(plate_img):
-    """
-    Preprocess a plate image for optimal OCR results.
-    Returns multiple preprocessed versions to try OCR on.
-    """
-    results = []
-
-    if plate_img is None or plate_img.size == 0:
-        return results
-
-    h, w = plate_img.shape[:2]
-
-    # Resize plate to standard height for better OCR
-    target_h = 80
-    scale = target_h / h
-    resized = cv2.resize(plate_img, (int(w * scale), target_h), interpolation=cv2.INTER_CUBIC)
-
-    # Version 1: Grayscale + adaptive threshold
-    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-    results.append(gray)
-
-    # Version 2: CLAHE enhanced
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
-    results.append(enhanced)
-
-    # Version 3: Otsu threshold
-    _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    results.append(otsu)
-
-    # Version 4: Adaptive threshold
-    adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                      cv2.THRESH_BINARY, 11, 2)
-    results.append(adaptive)
-
-    # Version 5: Inverted (for dark plates with light text)
-    results.append(cv2.bitwise_not(otsu))
-
-    return results
-
-
-def clean_plate_text(text):
-    """Clean and validate license plate text."""
-    # Remove non-alphanumeric characters
-    cleaned = re.sub(r'[^A-Za-z0-9]', '', text.upper().strip())
-
-    # Common OCR substitutions
-    substitutions = {
-        'O': '0', 'I': '1', 'S': '5', 'B': '8',
-        'G': '6', 'Z': '2', 'D': '0', 'Q': '0',
-    }
-
-    # Indian plates typically: XX 00 XX 0000
-    # Apply substitutions only in expected number positions
-    if len(cleaned) >= 4:
-        # First 2 chars should be letters (state code)
-        # Next 2 should be numbers (district code)
-        # Then letters (series), then numbers
-        corrected = list(cleaned)
-
-        # Fix positions that should be digits
-        for i in range(len(corrected)):
-            if i in (2, 3) or (i >= len(corrected) - 4):
-                if corrected[i] in substitutions:
-                    corrected[i] = substitutions[corrected[i]]
-
-        cleaned = ''.join(corrected)
-
-    # Valid plate: minimum 4 chars, maximum 12
-    if 4 <= len(cleaned) <= 12:
-        return cleaned
-    return None
-
-
-def read_plate_text(plate_img):
-    """
-    Read text from a plate image using EasyOCR with preprocessing.
-    Returns (text, confidence) or (None, 0.0)
-    """
-    reader = get_ocr_reader()
-    if reader is None:
-        return None, 0.0
-
-    preprocessed_versions = preprocess_plate_for_ocr(plate_img)
-
-    best_text = None
-    best_conf = 0.0
-
-    for processed in preprocessed_versions:
-        try:
-            ocr_results = reader.readtext(processed, detail=1, paragraph=False)
-            for (bbox_ocr, text, conf) in ocr_results:
-                cleaned = clean_plate_text(text)
-                if cleaned and conf > best_conf:
-                    best_text = cleaned
-                    best_conf = conf
-        except Exception as e:
-            logger.debug(f"OCR attempt error: {e}")
-            continue
-
-    # Also try reading the original color image
-    if best_conf < 0.5:
-        try:
-            ocr_results = reader.readtext(plate_img, detail=1, paragraph=False)
-            for (bbox_ocr, text, conf) in ocr_results:
-                cleaned = clean_plate_text(text)
-                if cleaned and conf > best_conf:
-                    best_text = cleaned
-                    best_conf = conf
-        except Exception:
-            pass
-
-    return best_text, best_conf
-
-
-# ============================================================
-# Vehicle Detection Pipeline
-# ============================================================
-
 def detect_vehicles_in_frame(frame):
     """
-    Full detection pipeline:
-    1. YOLOv8 detects vehicles
-    2. For each vehicle, locate license plate region
-    3. OCR reads plate text
-    Returns list of detections with bbox, type, plate info
+    Detection pipeline using OpenALPR.
+    OpenALPR detects the plate directly, so we infer "vehicle" presence
+    around the plate region rather than doing full YOLO.
     """
-    model = get_yolo_model()
-    if model is None:
-        return []
-
+    alpr = get_alpr()
     detections = []
+    
+    if alpr is None:
+        return detections
 
     try:
-        results = model(frame, verbose=False, conf=0.35)
-
-        for result in results:
-            boxes = result.boxes
-            if boxes is None:
+        # OpenALPR Python bindings take raw image bytes or file paths
+        # We need to encode the OpenCV frame to jpeg bytes first
+        ret, enc = cv2.imencode('.jpg', frame)
+        if not ret:
+            return detections
+            
+        results = alpr.recognize_array(enc.tobytes())
+        
+        for plate_result in results.get('results', []):
+            if not plate_result.get('candidates'):
                 continue
-
-            for box in boxes:
-                cls_id = int(box.cls[0])
-                if cls_id not in VEHICLE_CLASSES:
-                    continue
-
-                conf = float(box.conf[0])
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                vehicle_type = VEHICLE_CLASSES[cls_id]
-
-                # Ensure bbox is within frame bounds
-                h, w = frame.shape[:2]
-                x1, y1 = max(0, x1), max(0, y1)
-                x2, y2 = min(w, x2), min(h, y2)
-
-                # Crop vehicle region
-                vehicle_crop = frame[y1:y2, x1:x2]
-
-                plate_text = None
-                plate_conf = 0.0
-                plate_img = None
-                plate_bbox = None  # Relative to frame
-
-                if vehicle_crop.size > 0:
-                    # Step 2: Detect plate region within vehicle
-                    plate_candidates = detect_plate_region(vehicle_crop)
-
-                    for (px, py, pw, ph) in plate_candidates:
-                        # Extract plate image from vehicle crop
-                        plate_roi = vehicle_crop[py:py+ph, px:px+pw]
-
-                        if plate_roi.size > 0:
-                            # Step 3: OCR the plate
-                            text, text_conf = read_plate_text(plate_roi)
-
-                            if text and text_conf > plate_conf:
-                                plate_text = text
-                                plate_conf = text_conf
-                                plate_img = plate_roi.copy()
-                                # Convert plate bbox to frame coordinates
-                                plate_bbox = (x1 + px, y1 + py, pw, ph)
-
-                detections.append({
-                    'type': vehicle_type,
-                    'plate': plate_text,
-                    'plate_conf': plate_conf,
-                    'confidence': conf,
-                    'bbox': (x1, y1, x2, y2),
-                    'vehicle_crop': vehicle_crop,
-                    'plate_img': plate_img,
-                    'plate_bbox': plate_bbox,
-                })
-
+                
+            best_plate = plate_result['candidates'][0]
+            plate_text = best_plate['plate']
+            conf = best_plate['confidence'] / 100.0  # Normalize to 0.0 - 1.0
+            
+            # Extract plate coordinates
+            coords = plate_result['coordinates']
+            x_min = min(c['x'] for c in coords)
+            y_min = min(c['y'] for c in coords)
+            x_max = max(c['x'] for c in coords)
+            y_max = max(c['y'] for c in coords)
+            
+            pw = x_max - x_min
+            ph = y_max - y_min
+            plate_bbox = (x_min, y_min, pw, ph)
+            
+            # Estimate a vehicle bounding box around the plate
+            # Typically a car is about 3-5x wider than a license plate and much taller
+            vw = int(pw * 4)
+            vh = int(ph * 6)
+            
+            # Center roughly around plate
+            vx1 = max(0, x_min - int(pw * 1.5))
+            vy1 = max(0, y_min - int(ph * 4))
+            vx2 = min(frame.shape[1], vx1 + vw)
+            vy2 = min(frame.shape[0], vy1 + vh)
+            
+            vehicle_crop = frame[vy1:vy2, vx1:vx2]
+            plate_img = frame[y_min:y_max, x_min:x_max]
+            
+            detections.append({
+                'type': 'car', # OpenALPR only reads plates, so we guess 'car'
+                'plate': plate_text,
+                'plate_conf': conf,
+                'confidence': conf, # using plate conf as overall confidence
+                'bbox': (vx1, vy1, vx2, vy2),
+                'vehicle_crop': vehicle_crop,
+                'plate_img': plate_img,
+                'plate_bbox': plate_bbox,
+            })
+            
     except Exception as e:
-        logger.error(f"Detection error: {e}")
+        logger.error(f"OpenALPR detection error: {e}")
 
     return detections
 
@@ -680,15 +424,6 @@ def draw_highway_hud(frame, detections, tracker):
         'auto': (255, 255, 0),
         'unknown': (180, 180, 180),
     }
-
-    # --- Draw detection zone lines ---
-    # Horizontal scan lines (like highway cameras)
-    zone_y1 = int(h * 0.25)
-    zone_y2 = int(h * 0.85)
-    cv2.line(annotated, (0, zone_y1), (w, zone_y1), (0, 255, 255), 1, cv2.LINE_AA)
-    cv2.line(annotated, (0, zone_y2), (w, zone_y2), (0, 255, 255), 1, cv2.LINE_AA)
-    cv2.putText(annotated, "DETECTION ZONE", (10, zone_y1 - 8),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
 
     # --- Update tracker ---
     tracker_dets = []
@@ -791,91 +526,20 @@ def draw_highway_hud(frame, detections, tracker):
             cv2.putText(annotated, plate_label, (x1 + 5, y2 + pl_h + 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, COLOR_PLATE, 2, cv2.LINE_AA)
 
-        # --- Track and count new vehicles that cross the detection zone ---
+        # --- Track and count new vehicles across the entire full cam view ---
         if not tracker.saved.get(obj_id, False):
-            if cy > zone_y2:
-                tracker.saved[obj_id] = True
-                total_vehicles_counted += 1
-                if plate_text:
-                    detected_plates_log.insert(0, {
-                        'plate': plate_text,
-                        'type': det_type,
-                        'time': datetime.now().strftime('%H:%M:%S'),
-                        'id': obj_id,
-                    })
-                    # Keep only last 10
-                    if len(detected_plates_log) > 10:
-                        detected_plates_log.pop()
-
-    # ============================================================
-    # Draw HUD Overlay (top bar & side panel)
-    # ============================================================
-
-    # --- Top HUD bar ---
-    hud_h = 45
-    overlay = annotated.copy()
-    cv2.rectangle(overlay, (0, 0), (w, hud_h), COLOR_HUD_BG, -1)
-    cv2.addWeighted(overlay, 0.75, annotated, 0.25, 0, annotated)
-
-    # Title
-    cv2.putText(annotated, "HIGHWAY VEHICLE MONITORING SYSTEM", (15, 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1, cv2.LINE_AA)
-
-    # Timestamp
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    ts_size, _ = cv2.getTextSize(timestamp, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-    cv2.putText(annotated, timestamp, (w - ts_size[0] - 15, 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_TEXT, 1, cv2.LINE_AA)
-
-    # Active vehicles count
-    active_text = f"ACTIVE: {len(tracker.objects)}"
-    cv2.putText(annotated, active_text, (15, 38),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_VEHICLE, 1, cv2.LINE_AA)
-
-    # Total count
-    total_text = f"TOTAL: {total_vehicles_counted}"
-    cv2.putText(annotated, total_text, (180, 38),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 200, 255), 1, cv2.LINE_AA)
-
-    # Recording indicator
-    if int(time.time() * 2) % 2 == 0:  # Blinking
-        cv2.circle(annotated, (w - 30, 35), 6, (0, 0, 255), -1)
-        cv2.putText(annotated, "REC", (w - 60, 39),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 1, cv2.LINE_AA)
-
-    # --- Side panel: Recent plate detections ---
-    if detected_plates_log:
-        panel_w = 220
-        panel_x = w - panel_w - 10
-        panel_y = hud_h + 10
-        panel_h = min(len(detected_plates_log) * 30 + 35, 340)
-
-        overlay2 = annotated.copy()
-        cv2.rectangle(overlay2, (panel_x, panel_y), (w - 10, panel_y + panel_h),
-                      COLOR_HUD_BG, -1)
-        cv2.addWeighted(overlay2, 0.7, annotated, 0.3, 0, annotated)
-
-        cv2.putText(annotated, "DETECTED PLATES", (panel_x + 10, panel_y + 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, COLOR_PLATE, 1, cv2.LINE_AA)
-        cv2.line(annotated, (panel_x + 10, panel_y + 28),
-                 (w - 20, panel_y + 28), COLOR_PLATE, 1)
-
-        for i, entry in enumerate(detected_plates_log[:10]):
-            ey = panel_y + 48 + i * 28
-            cv2.putText(annotated, f"{entry['plate']}", (panel_x + 10, ey),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, COLOR_TEXT, 1, cv2.LINE_AA)
-            cv2.putText(annotated, f"{entry['time']}", (panel_x + 140, ey),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.3, (150, 150, 150), 1, cv2.LINE_AA)
-
-    # --- Bottom status bar ---
-    bar_y = h - 25
-    overlay3 = annotated.copy()
-    cv2.rectangle(overlay3, (0, bar_y), (w, h), COLOR_HUD_BG, -1)
-    cv2.addWeighted(overlay3, 0.7, annotated, 0.3, 0, annotated)
-
-    status_text = f"YOLO v8  |  FPS: --  |  Vehicles in frame: {len(detections)}  |  Plates read: {len([d for d in detections if d.get('plate')])}"
-    cv2.putText(annotated, status_text, (15, h - 8),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (180, 180, 180), 1, cv2.LINE_AA)
+            tracker.saved[obj_id] = True
+            total_vehicles_counted += 1
+            if plate_text:
+                detected_plates_log.insert(0, {
+                    'plate': plate_text,
+                    'type': det_type,
+                    'time': datetime.now().strftime('%H:%M:%S'),
+                    'id': obj_id,
+                })
+                # Keep only last 10
+                if len(detected_plates_log) > 10:
+                    detected_plates_log.pop()
 
     return annotated
 
@@ -969,56 +633,122 @@ def generate_detection_feed(source=0):
     """
     Generator for streaming video with real-time vehicle detection.
     Highway-camera-style with tracking, plate reading, and HUD overlay.
+    Runs detection in a background thread to prevent lag.
     """
     global vehicle_tracker, total_vehicles_counted, detected_plates_log
 
     cam = get_camera(source)
-    frame_count = 0
-    detect_interval = 3    # Detect every N frames (lower = more responsive)
-    last_detections = []
-    fps_timer = time.time()
-    fps = 0.0
-    saved_plates = set()   # Track which plates we've already saved
-
+    
     # Reset tracker for new feed
     vehicle_tracker = CentroidTracker(max_disappeared=40, max_distance=100)
     total_vehicles_counted = 0
     detected_plates_log = []
+    
+    saved_plates = set()
+    # Threading setup for async detection
+    import queue
+    frame_queue = queue.Queue(maxsize=1)
+    result_queue = queue.Queue(maxsize=1)
+    
+    def detection_worker():
+        while True:
+            try:
+                frame_to_detect = frame_queue.get(timeout=1.0)
+                if frame_to_detect is None:
+                    break  # Stop signal
+                    
+                dets = detect_vehicles_in_frame(frame_to_detect)
+                
+                # Try to put results in queue without blocking
+                try:
+                    # Clear out old results if falling behind
+                    while not result_queue.empty():
+                        result_queue.get_nowait()
+                    result_queue.put_nowait(dets)
+                except queue.Full:
+                    pass
+                # Clear large objects from memory
+                del dets
+                del frame_to_detect
+                gc.collect()
+                    
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Worker error: {e}")
 
-    while True:
-        frame = cam.get_frame()
-        if frame is not None:
-            frame_count += 1
+    # Start background detection thread
+    worker_thread = threading.Thread(target=detection_worker, daemon=True)
+    worker_thread.start()
 
-            # Calculate FPS
-            if frame_count % 30 == 0:
-                fps = 30.0 / (time.time() - fps_timer)
-                fps_timer = time.time()
+    frame_count = 0
+    detect_interval = 3    # Send frame to detector every N frames
+    last_detections = []
+    fps_timer = time.time()
+    current_fps = "--"
 
-            # Run detection periodically
-            if frame_count % detect_interval == 0:
-                detections = detect_vehicles_in_frame(frame)
-                last_detections = detections
+    try:
+        while True:
+            frame = cam.get_frame()
+            if frame is not None:
+                frame_count += 1
 
-                # Save new plate detections to database
-                for det in detections:
-                    plate = det.get('plate')
-                    if plate and plate not in saved_plates:
-                        try:
-                            save_detection(det)
-                            saved_plates.add(plate)
-                            logger.info(f"Saved plate: {plate}")
-                        except Exception as e:
-                            logger.error(f"Save error: {e}")
+                # Calculate FPS
+                if frame_count % 30 == 0:
+                    current_fps = f"{30.0 / (time.time() - fps_timer):.1f}"
+                    fps_timer = time.time()
 
-            # Draw HUD on every frame (using last known detections)
-            annotated = draw_highway_hud(frame, last_detections, vehicle_tracker)
+                # Send frame to detection worker periodically (copying only when needed)
+                if frame_count % detect_interval == 0:
+                    try:
+                        # Clear old frame if still in queue (to save memory)
+                        while not frame_queue.empty():
+                            frame_queue.get_nowait()
+                        # Queue the freshest frame
+                        frame_queue.put_nowait(frame.copy())
+                    except queue.Full:
+                        pass
+                
+                # Check if new detections are ready
+                try:
+                    last_detections = result_queue.get_nowait()
+                    
+                    # Process new detections (save to DB)
+                    for det in last_detections:
+                        plate = det.get('plate')
+                        if plate and plate not in saved_plates:
+                            try:
+                                save_detection(det)
+                                saved_plates.add(plate)
+                                logger.info(f"Saved plate: {plate}")
+                            except Exception as e:
+                                logger.error(f"Save error: {e}")
+                                
+                except queue.Empty:
+                    pass # Keep using last_detections
 
-            ret, jpeg = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
-            if ret:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
-        time.sleep(0.033)
+                # Draw HUD on every frame (using last known detections)
+                annotated = draw_highway_hud(frame, last_detections, vehicle_tracker)
+                
+                ret, jpeg = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                
+                # Clear references from memory
+                del frame
+                del annotated
+                
+                if ret:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
+                del jpeg
+            time.sleep(0.03)  # ~30fps loop limit
+    finally:
+        # Cleanup when client disconnects
+        try:
+            while not frame_queue.empty():
+                frame_queue.get_nowait()
+            frame_queue.put_nowait(None)
+        except Exception:
+            pass
 
 
 def capture_snapshot(source=0):

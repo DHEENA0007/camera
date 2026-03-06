@@ -92,6 +92,35 @@
                 </div>
             </div>
         </div>
+
+        <!-- Static Image Tester -->
+        <div class="card card--compact" id="test-image-card" style="margin-top: 15px;">
+            <div class="card__header">
+                <h3 class="card__title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                    Test Local Image
+                </h3>
+            </div>
+            <div class="card__body">
+                <p class="text-muted" style="font-size: 0.8rem; margin-bottom: 10px;">Upload an image to test OpenALPR model detections directly.</p>
+                <input type="file" id="test-image-input" accept="image/*" style="display: none;" onchange="uploadTestImage(this)">
+                <button class="btn btn--primary btn--sm" style="width: 100%;" onclick="document.getElementById('test-image-input').click()">
+                    Browse Photo
+                </button>
+                <div id="test-image-result" style="margin-top: 15px; display: none;">
+                    <img id="test-image-preview" src="" style="width: 100%; border-radius: 4px; border: 1px solid rgba(255,255,255,0.1);">
+                    <div id="test-image-plate" style="margin-top: 5px; font-weight: bold; color: #00c864; text-align: center;"></div>
+                </div>
+                <div id="test-image-loading" style="display: none; text-align: center; margin-top: 10px;">
+                    <span class="spinner" style="margin: 0 auto;"></span><br/>
+                    <span style="font-size: 0.8rem; color: #888;">Analyzing...</span>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -211,5 +240,47 @@
     `;
         document.getElementById('video-overlay').style.display = 'flex';
     });
+
+    // Upload Test Image Logic
+    function uploadTestImage(input) {
+        if (!input.files || !input.files[0]) return;
+        
+        let formData = new FormData();
+        formData.append('image', input.files[0]);
+
+        document.getElementById('test-image-result').style.display = 'none';
+        document.getElementById('test-image-loading').style.display = 'block';
+
+        fetch("{% url 'vehicles:test_image' %}", {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-CSRFToken': '{{ csrf_token }}'
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('test-image-loading').style.display = 'none';
+            if (data.success) {
+                document.getElementById('test-image-preview').src = 'data:image/jpeg;base64,' + data.image_b64;
+                let plateText = "No plates found";
+                if(data.detections && data.detections.length > 0) {
+                    plateText = "Plates: " + data.detections.map(d => d.plate).join(', ');
+                }
+                document.getElementById('test-image-plate').innerText = plateText;
+                document.getElementById('test-image-result').style.display = 'block';
+            } else {
+                alert("Error: " + data.error);
+            }
+        })
+        .catch(err => {
+            document.getElementById('test-image-loading').style.display = 'none';
+            alert("Upload failed.");
+            console.error(err);
+        });
+        
+        // Reset input so the same file could be selected again
+        input.value = "";
+    }
 </script>
 {% endblock %}

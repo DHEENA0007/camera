@@ -1,5 +1,6 @@
 import json
 import cv2
+import numpy as np
 import base64
 import socket
 import subprocess
@@ -20,6 +21,9 @@ from .detection_service import (
     capture_snapshot,
     get_camera,
     stop_camera,
+    detect_vehicles_in_frame,
+    draw_highway_hud,
+    vehicle_tracker
 )
 
 
@@ -80,6 +84,59 @@ def live_feed(request):
         'current_source': source,
     }
     return render(request, 'vehicles/live_feed.html', context)
+
+
+@csrf_exempt
+def test_image_upload(request):
+    """API endpoint to test OpenALPR with an uploaded static image."""
+    if request.method == 'POST' and request.FILES.get('image'):
+        try:
+            image_file = request.FILES['image']
+            
+            # Read image to numpy buffer
+            file_bytes = np.frombuffer(image_file.read(), np.uint8)
+            frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            
+            if frame is None:
+                return JsonResponse({"error": "Failed to decode image"}, status=400)
+                
+            # Run detection
+            detections = detect_vehicles_in_frame(frame)
+            
+            # Just draw the results purely for static visual display
+            annotated = frame.copy()
+            for det in detections:
+                if det.get('plate_bbox'):
+                    px, py, pw, ph = det['plate_bbox']
+                    cv2.rectangle(annotated, (px, py), (px+pw, py+ph), (0, 255, 255), 2)
+                    label = f"{det.get('plate', 'UNKNOWN')} ({det.get('confidence', 0.0):.2f})"
+                    cv2.putText(annotated, label, (px, py - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            
+            # Encode back to jpeg for the frontend
+            ret, jpeg = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if not ret:
+                return JsonResponse({"error": "Failed to encode resulting image"}, status=500)
+                
+            b64_image = base64.b64encode(jpeg.tobytes()).decode('utf-8')
+            
+            response_data = {
+                "success": True,
+                "image_b64": b64_image,
+                "detections": [
+                    {
+                        "plate": d.get("plate"),
+                        "confidence": d.get("confidence", 0.0)
+                    } for d in detections
+                ]
+            }
+            return JsonResponse(response_data)
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return JsonResponse({"error": str(e)}, status=500)
+            
+    return JsonResponse({"error": "Invalid request"}, status=400)
 
 
 def video_stream(request):
