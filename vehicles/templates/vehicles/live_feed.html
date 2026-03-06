@@ -15,11 +15,12 @@
             </h2>
             <div class="feed-controls">
                 <select id="camera-select" class="select-input" onchange="switchCamera(this.value)">
-                    <option value="0">Default Camera (0)</option>
                     {% for cam in cameras %}
-                    <option value="{{ cam.source }}" {% if cam.source == current_source %}selected{% endif %}>
-                        {{ cam.name }}
+                    <option value="{{ cam.id }}" {% if forloop.first %}selected{% endif %}>
+                        {{ cam.name }} ({{ cam.get_connection_type_display }})
                     </option>
+                    {% empty %}
+                    <option value="0">Default Camera (0)</option>
                     {% endfor %}
                 </select>
                 <div class="feed-mode-toggle">
@@ -142,35 +143,44 @@
 <script>
     let currentMode = 'raw';
     let detectionCount = 0;
+    let currentSource = '{{ current_source|escapejs }}';
 
     function setFeedMode(mode) {
         currentMode = mode;
         const feed = document.getElementById('video-feed');
-        const source = document.getElementById('camera-select').value;
 
         document.getElementById('btn-raw').classList.toggle('active', mode === 'raw');
         document.getElementById('btn-detect').classList.toggle('active', mode === 'detection');
 
         if (mode === 'raw') {
-            feed.src = `{% url 'vehicles:video_stream' %}?source=${source}`;
+            feed.src = `{% url 'vehicles:video_stream' %}?source=${encodeURIComponent(currentSource)}`;
             document.getElementById('feed-info').textContent = 'LIVE';
         } else {
-            feed.src = `{% url 'vehicles:detection_stream' %}?source=${source}`;
+            feed.src = `{% url 'vehicles:detection_stream' %}?source=${encodeURIComponent(currentSource)}`;
             document.getElementById('feed-info').textContent = 'DETECTING';
             document.getElementById('feed-info').classList.add('detecting');
         }
     }
 
-    function switchCamera(source) {
-        setFeedMode(currentMode);
+    function switchCamera(cameraId) {
+        // Fetch camera details to get the source URL
+        fetch(`/cameras/${cameraId}/edit/`)
+            .then(r => r.json())
+            .then(data => {
+                // Redirect to live feed with this camera's source
+                window.location.href = `{% url 'vehicles:live_feed' %}?source=${encodeURIComponent(currentSource)}`;
+            })
+            .catch(() => {
+                // Fallback: just redirect with camera ID
+                window.location.href = `{% url 'vehicles:live_feed' %}?camera_id=${cameraId}`;
+            });
     }
 
     function controlCamera(action) {
-        const source = document.getElementById('camera-select').value;
         fetch('{% url "vehicles:camera_control" %}', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `action=${action}&source=${source}`
+            body: `action=${action}&source=${encodeURIComponent(currentSource)}`
         })
             .then(r => r.json())
             .then(data => {
@@ -181,7 +191,6 @@
     }
 
     function captureSnapshot() {
-        const source = document.getElementById('camera-select').value;
         const btn = document.getElementById('btn-snapshot-live');
         btn.classList.add('loading');
         btn.disabled = true;
@@ -189,7 +198,7 @@
         fetch('{% url "vehicles:snapshot" %}', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `source=${source}`
+            body: `source=${encodeURIComponent(currentSource)}`
         })
             .then(r => r.json())
             .then(data => {

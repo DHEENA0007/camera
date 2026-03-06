@@ -58,7 +58,23 @@ def dashboard(request):
 def live_feed(request):
     """Live camera feed page."""
     cameras = CameraConfig.objects.filter(is_active=True)
-    source = request.GET.get('source', '0')
+    source = request.GET.get('source', '')
+    camera_id = request.GET.get('camera_id', '')
+    
+    # If camera_id is provided, look up that camera's source URL
+    if camera_id:
+        try:
+            cam = CameraConfig.objects.get(id=int(camera_id))
+            source = str(cam.build_source_url())
+        except (CameraConfig.DoesNotExist, ValueError):
+            source = '0'
+    # If no source specified, use the first active camera's source URL
+    elif not source and cameras.exists():
+        first_cam = cameras.first()
+        source = str(first_cam.build_source_url())
+    elif not source:
+        source = '0'
+    
     context = {
         'cameras': cameras,
         'current_source': source,
@@ -424,87 +440,178 @@ def camera_scan(request):
 
     if scan_type == 'usb':
         discovered = []
-        import glob
-        video_devices = sorted(glob.glob('/dev/video*'))
-        for dev in video_devices:
-            try:
-                index = int(dev.replace('/dev/video', ''))
-                name = f"USB Camera {index}"
+        import platform as _plat
+        if _plat.system().lower() == 'windows':
+            # On Windows, probe camera indices 0-9 using OpenCV
+            for index in range(10):
                 try:
-                    res = subprocess.run(['v4l2-ctl', '-d', dev, '--info'], capture_output=True, text=True, timeout=1)
-                    if res.returncode == 0:
-                        for line in res.stdout.split('\n'):
-                            if "Card type" in line:
-                                name = line.split(':', 1)[1].strip()
-                                break
+                    cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+                    if cap.isOpened():
+                        name = f"USB Camera {index}"
+                        discovered.append({
+                            'ip': str(index),
+                            'hostname': '',
+                            'camera_type': 'USB Camera',
+                            'open_ports': [],
+                            'suggested_port': '',
+                            'stream_path': name,
+                            'is_usb': True
+                        })
+                        cap.release()
                 except Exception:
                     pass
-                discovered.append({
-                    'ip': str(index),  # Using 'ip' field to hold the device index
-                    'hostname': '',
-                    'camera_type': 'USB Camera',
-                    'open_ports': [],
-                    'suggested_port': '',
-                    'stream_path': name, # Using 'stream_path' to hold the friendly name
-                    'is_usb': True
-                })
-            except ValueError:
-                pass
+        else:
+            # On Linux, use /dev/video* devices
+            import glob
+            video_devices = sorted(glob.glob('/dev/video*'))
+            for dev in video_devices:
+                try:
+                    index = int(dev.replace('/dev/video', ''))
+                    name = f"USB Camera {index}"
+                    try:
+                        res = subprocess.run(['v4l2-ctl', '-d', dev, '--info'], capture_output=True, text=True, timeout=1)
+                        if res.returncode == 0:
+                            for line in res.stdout.split('\n'):
+                                if "Card type" in line:
+                                    name = line.split(':', 1)[1].strip()
+                                    break
+                    except Exception:
+                        pass
+                    discovered.append({
+                        'ip': str(index),
+                        'hostname': '',
+                        'camera_type': 'USB Camera',
+                        'open_ports': [],
+                        'suggested_port': '',
+                        'stream_path': name,
+                        'is_usb': True
+                    })
+                except ValueError:
+                    pass
         
         return JsonResponse({
             'success': True,
             'cameras': discovered,
             'subnets_scanned': [],
-            'total_hosts_checked': len(video_devices),
+            'total_hosts_checked': len(discovered),
             'cameras_found': len(discovered),
         })
 
     # Common camera ports to probe
+    CAMERA_PORTS = [554, 8554, 80, 8080, 443, 37777, 34567, 8000, 8899]
+
+    import platform
+    import re
+    is_windows = platform.system().lower() == 'windows'
 
     def get_local_subnets():
-        """Get local network subnets from ip command."""
+        """Get local network subnets (cross-platform: Windows & Linux)."""
         subnets = []
         try:
-            result = subprocess.run(
-                ['ip', '-4', 'addr', 'show'],
-                capture_output=True, text=True, timeout=5
-            )
-            import re
-            for match in re.finditer(r'inet (\d+\.\d+\.\d+\.\d+)/(\d+)', result.stdout):
-                ip_str, prefix = match.group(1), int(match.group(2))
-                if ip_str.startswith('127.'):
-                    continue
-                try:
-                    network = ipaddress.IPv4Network(f"{ip_str}/{prefix}", strict=False)
-                    subnets.append({
-                        'network': str(network),
-                        'ip': ip_str,
-                        'interface': 'unknown'
-                    })
-                except Exception:
-                    pass
+            if is_windows:
+                # Use ipconfig on Windows
+                result = subprocess.run(
+                    ['ipconfig'],
+                    capture_output=True, text=True, timeout=5
+                )
+                # Parse ipconfig output for IPv4 addresses and subnet masks
+                lines = result.stdout.split('\n')
+                current_ip = None
+                for line in lines:
+                    line = line.strip()
+                    # Match IPv4 Address line
+                    ip_match = re.search(r'IPv4 Address[.\s]*:\s*(\d+\.\d+\.\d+\.\d+)', line)
+                    if ip_match:
+                        current_ip = ip_match.group(1)
+                        continue
+                    # Match Subnet Mask line (comes right after IPv4 address)
+                    mask_match = re.search(r'Subnet Mask[.\s]*:\s*(\d+\.\d+\.\d+\.\d+)', line)
+                    if mask_match and current_ip:
+                        mask = mask_match.group(1)
+                        if current_ip.startswith('127.'):
+                            current_ip = None
+                            continue
+                        try:
+                            network = ipaddress.IPv4Network(f"{current_ip}/{mask}", strict=False)
+                            subnets.append({
+                                'network': str(network),
+                                'ip': current_ip,
+                                'interface': 'unknown'
+                            })
+                        except Exception:
+                            pass
+                        current_ip = None
+            else:
+                # Use ip command on Linux
+                result = subprocess.run(
+                    ['ip', '-4', 'addr', 'show'],
+                    capture_output=True, text=True, timeout=5
+                )
+                for match in re.finditer(r'inet (\d+\.\d+\.\d+\.\d+)/(\d+)', result.stdout):
+                    ip_str, prefix = match.group(1), int(match.group(2))
+                    if ip_str.startswith('127.'):
+                        continue
+                    try:
+                        network = ipaddress.IPv4Network(f"{ip_str}/{prefix}", strict=False)
+                        subnets.append({
+                            'network': str(network),
+                            'ip': ip_str,
+                            'interface': 'unknown'
+                        })
+                    except Exception:
+                        pass
         except Exception:
             pass
+
+        # Fallback: use socket to get local IP if no subnets found
+        if not subnets:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(('8.8.8.8', 80))
+                local_ip = s.getsockname()[0]
+                s.close()
+                if not local_ip.startswith('127.'):
+                    network = ipaddress.IPv4Network(f"{local_ip}/24", strict=False)
+                    subnets.append({
+                        'network': str(network),
+                        'ip': local_ip,
+                        'interface': 'auto-detected'
+                    })
+            except Exception:
+                pass
+
         return subnets
 
     def get_arp_hosts():
-        """Read ARP table to find known hosts."""
+        """Read ARP table to find known hosts (cross-platform)."""
         hosts = set()
         try:
-            with open('/proc/net/arp', 'r') as f:
-                lines = f.readlines()[1:]  # Skip header
-                for line in lines:
-                    parts = line.split()
-                    if len(parts) >= 4 and parts[2] != '0x0':
-                        ip = parts[0]
-                        if not ip.startswith('127.'):
-                            hosts.add(ip)
+            if is_windows:
+                # Use 'arp -a' on Windows
+                result = subprocess.run(
+                    ['arp', '-a'],
+                    capture_output=True, text=True, timeout=5
+                )
+                for match in re.finditer(r'(\d+\.\d+\.\d+\.\d+)', result.stdout):
+                    ip = match.group(1)
+                    if not ip.startswith('127.') and not ip.endswith('.255'):
+                        hosts.add(ip)
+            else:
+                # Read /proc/net/arp on Linux
+                with open('/proc/net/arp', 'r') as f:
+                    lines = f.readlines()[1:]  # Skip header
+                    for line in lines:
+                        parts = line.split()
+                        if len(parts) >= 4 and parts[2] != '0x0':
+                            ip = parts[0]
+                            if not ip.startswith('127.'):
+                                hosts.add(ip)
         except Exception:
             pass
         return hosts
 
     def ping_sweep(subnet_str, timeout=1):
-        """Quick ping sweep to populate ARP table."""
+        """Quick ping sweep to populate ARP table (cross-platform)."""
         try:
             network = ipaddress.IPv4Network(subnet_str, strict=False)
             # Only sweep /24 or smaller to avoid huge scans
@@ -514,11 +621,16 @@ def camera_scan(request):
                     strict=False
                 )
 
+            if is_windows:
+                ping_cmd = lambda h: ['ping', '-n', '1', '-w', '1000', str(h)]
+            else:
+                ping_cmd = lambda h: ['ping', '-c', '1', '-W', '1', str(h)]
+
             threads = []
             for host in list(network.hosts())[:254]:
                 t = threading.Thread(
                     target=lambda h: subprocess.run(
-                        ['ping', '-c', '1', '-W', '1', str(h)],
+                        ping_cmd(h),
                         capture_output=True, timeout=3
                     ),
                     args=(host,)
