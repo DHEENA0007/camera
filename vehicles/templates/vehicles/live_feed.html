@@ -1,8 +1,8 @@
 {% extends "vehicles/base.html" %}
 {% load static %}
 
-{% block title %}Live Feed - CCTV Vehicle Monitor{% endblock %}
-{% block page_title %}Live Camera Feed{% endblock %}
+{% block title %}Live Detection - CCTV Vehicle Monitor{% endblock %}
+{% block page_title %}Highway Vehicle Detection{% endblock %}
 
 {% block content %}
 <div class="live-feed-container">
@@ -11,29 +11,28 @@
         <div class="card__header">
             <h2 class="card__title">
                 <span class="recording-dot"></span>
-                Camera Feed
+                🎯 Auto Detection Feed
             </h2>
             <div class="feed-controls">
+                {% if cameras|length > 1 %}
                 <select id="camera-select" class="select-input" onchange="switchCamera(this.value)">
                     {% for cam in cameras %}
                     <option value="{{ cam.id }}" {% if forloop.first %}selected{% endif %}>
                         {{ cam.name }} ({{ cam.get_connection_type_display }})
                     </option>
-                    {% empty %}
-                    <option value="0">Default Camera (0)</option>
                     {% endfor %}
                 </select>
-                <div class="feed-mode-toggle">
-                    <button class="toggle-btn active" id="btn-raw" onclick="setFeedMode('raw')">Raw Feed</button>
-                    <button class="toggle-btn" id="btn-detect" onclick="setFeedMode('detection')">Detection
-                        Mode</button>
-                </div>
+                {% endif %}
+                <span class="feed-status-badge">
+                    <span class="pulse-dot"></span>
+                    AUTO CAPTURE ON
+                </span>
             </div>
         </div>
         <div class="card__body video-body">
             <div class="video-wrapper" id="video-wrapper">
-                <img id="video-feed" src="{% url 'vehicles:video_stream' %}?source={{ current_source }}"
-                    alt="Live Camera Feed" class="video-frame" />
+                <img id="video-feed" src="{% url 'vehicles:detection_stream' %}?source={{ current_source }}"
+                    alt="Live Detection Feed" class="video-frame" />
                 <div class="video-overlay" id="video-overlay">
                     <div class="video-status">
                         <div class="spinner"></div>
@@ -41,209 +40,160 @@
                     </div>
                 </div>
                 <div class="video-controls-overlay">
-                    <span class="feed-resolution" id="feed-info">LIVE</span>
+                    <span class="feed-resolution detecting" id="feed-info">🎯 DETECTING</span>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Side Panel -->
+    <!-- Side Panel: Live Detection Log -->
     <div class="live-side-panel">
-        <!-- Camera Actions -->
-        <div class="card card--compact" id="camera-actions-card">
+        <!-- Auto Detection Status -->
+        <div class="card card--compact" id="auto-detect-status-card">
             <div class="card__header">
-                <h3 class="card__title">Camera Controls</h3>
+                <h3 class="card__title">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <polyline points="12 6 12 12 16 14"/>
+                    </svg>
+                    Detection Status
+                </h3>
             </div>
             <div class="card__body">
-                <div class="control-buttons">
-                    <button class="btn btn--primary btn--block" id="btn-start-camera" onclick="controlCamera('start')">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2">
-                            <polygon points="5 3 19 12 5 21 5 3" />
-                        </svg>
-                        Start Camera
-                    </button>
-                    <button class="btn btn--danger btn--block" id="btn-stop-camera" onclick="controlCamera('stop')">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2">
-                            <rect x="6" y="6" width="12" height="12" rx="1" />
-                        </svg>
-                        Stop Camera
-                    </button>
-                    <button class="btn btn--success btn--block" id="btn-snapshot-live" onclick="captureSnapshot()">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2">
-                            <path
-                                d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-                            <circle cx="12" cy="13" r="4" />
-                        </svg>
-                        Capture & Detect
-                    </button>
+                <div class="status-grid">
+                    <div class="status-item">
+                        <span class="status-label">Mode</span>
+                        <span class="status-value status-value--active">Auto Capture</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Vehicles Detected</span>
+                        <span class="status-value" id="vehicle-count">--</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Plates Read</span>
+                        <span class="status-value" id="plate-count">--</span>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- Live Detections -->
+        <!-- Live Detection Log -->
         <div class="card card--compact" id="live-detections-card">
             <div class="card__header">
-                <h3 class="card__title">Live Detections</h3>
+                <h3 class="card__title">Recent Auto-Captures</h3>
                 <span class="detection-counter" id="detection-counter">0</span>
             </div>
             <div class="card__body">
                 <div class="live-detection-list" id="live-detection-list">
                     <div class="empty-state empty-state--sm">
-                        <p>No detections yet</p>
-                        <p class="text-muted">Start detection mode to begin</p>
+                        <p>Waiting for vehicles...</p>
+                        <p class="text-muted">Vehicles are captured automatically when detected</p>
                     </div>
                 </div>
             </div>
         </div>
-
-        <!-- Snapshot Preview -->
-        <div class="card card--compact" id="snapshot-card" style="display:none;">
-            <div class="card__header">
-                <h3 class="card__title">Snapshot</h3>
-                <button class="btn-icon"
-                    onclick="document.getElementById('snapshot-card').style.display='none'">✕</button>
-            </div>
-            <div class="card__body">
-                <img id="snapshot-preview" class="snapshot-img" alt="Snapshot" />
-            </div>
-        </div>
     </div>
 </div>
 
-<!-- Camera Source Input -->
-<div class="card card--settings" id="camera-settings-card">
-    <div class="card__header">
-        <h3 class="card__title">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="3" />
-                <path
-                    d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-            </svg>
-            Camera Settings
-        </h3>
-    </div>
-    <div class="card__body">
-        <div class="setting-row">
-            <label class="setting-label">Camera Source</label>
-            <div class="setting-input-group">
-                <input type="text" id="camera-source-input" class="text-input"
-                    placeholder="0 for webcam or rtsp://... for IP camera" value="{{ current_source }}">
-                <button class="btn btn--primary" onclick="applySource()">Apply</button>
-            </div>
-            <p class="setting-help">Enter <code>0</code> for default webcam, or an RTSP URL for IP/CCTV camera</p>
-        </div>
-    </div>
-</div>
+<style>
+    .feed-status-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 12px;
+        background: rgba(0, 200, 100, 0.15);
+        border: 1px solid rgba(0, 200, 100, 0.3);
+        border-radius: 20px;
+        color: #00c864;
+        font-size: 0.75rem;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+    }
+    .pulse-dot {
+        width: 8px;
+        height: 8px;
+        background: #00c864;
+        border-radius: 50%;
+        animation: pulse-glow 1.5s infinite;
+    }
+    @keyframes pulse-glow {
+        0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(0, 200, 100, 0.4); }
+        50% { opacity: 0.7; box-shadow: 0 0 0 6px rgba(0, 200, 100, 0); }
+    }
+    .status-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+    .status-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 6px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .status-item:last-child { border-bottom: none; }
+    .status-label {
+        font-size: 0.8rem;
+        color: rgba(255,255,255,0.5);
+    }
+    .status-value {
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: rgba(255,255,255,0.9);
+    }
+    .status-value--active {
+        color: #00c864;
+    }
+</style>
 {% endblock %}
 
 {% block extra_js %}
 <script>
-    let currentMode = 'raw';
-    let detectionCount = 0;
     let currentSource = '{{ current_source|escapejs }}';
 
-    function setFeedMode(mode) {
-        currentMode = mode;
-        const feed = document.getElementById('video-feed');
-
-        document.getElementById('btn-raw').classList.toggle('active', mode === 'raw');
-        document.getElementById('btn-detect').classList.toggle('active', mode === 'detection');
-
-        if (mode === 'raw') {
-            feed.src = `{% url 'vehicles:video_stream' %}?source=${encodeURIComponent(currentSource)}`;
-            document.getElementById('feed-info').textContent = 'LIVE';
-        } else {
-            feed.src = `{% url 'vehicles:detection_stream' %}?source=${encodeURIComponent(currentSource)}`;
-            document.getElementById('feed-info').textContent = 'DETECTING';
-            document.getElementById('feed-info').classList.add('detecting');
-        }
-    }
-
     function switchCamera(cameraId) {
-        // Fetch camera details to get the source URL
-        fetch(`/cameras/${cameraId}/edit/`)
-            .then(r => r.json())
-            .then(data => {
-                // Redirect to live feed with this camera's source
-                window.location.href = `{% url 'vehicles:live_feed' %}?source=${encodeURIComponent(currentSource)}`;
-            })
-            .catch(() => {
-                // Fallback: just redirect with camera ID
-                window.location.href = `{% url 'vehicles:live_feed' %}?camera_id=${cameraId}`;
-            });
+        window.location.href = `{% url 'vehicles:live_feed' %}?camera_id=${cameraId}`;
     }
 
-    function controlCamera(action) {
-        fetch('{% url "vehicles:camera_control" %}', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `action=${action}&source=${encodeURIComponent(currentSource)}`
-        })
+    // Poll stats to show live detection counts
+    function updateStats() {
+        fetch('{% url "vehicles:api_stats" %}')
             .then(r => r.json())
             .then(data => {
-                if (action === 'start') {
-                    setFeedMode(currentMode);
-                }
-            });
-    }
+                document.getElementById('vehicle-count').textContent = data.today_total || 0;
+                document.getElementById('plate-count').textContent = data.today_unique || 0;
+                document.getElementById('detection-counter').textContent = data.today_total || 0;
 
-    function captureSnapshot() {
-        const btn = document.getElementById('btn-snapshot-live');
-        btn.classList.add('loading');
-        btn.disabled = true;
-
-        fetch('{% url "vehicles:snapshot" %}', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `source=${encodeURIComponent(currentSource)}`
-        })
-            .then(r => r.json())
-            .then(data => {
-                btn.classList.remove('loading');
-                btn.disabled = false;
-
-                if (data.snapshot) {
-                    document.getElementById('snapshot-preview').src = data.snapshot;
-                    document.getElementById('snapshot-card').style.display = 'block';
-                }
-
-                if (data.detections.length > 0) {
+                // Update recent detections list
+                if (data.recent && data.recent.length > 0) {
                     const list = document.getElementById('live-detection-list');
-                    data.detections.forEach(det => {
-                        detectionCount++;
-                        const item = document.createElement('div');
-                        item.className = 'live-detection-item animate-in';
-                        item.innerHTML = `
-                    <div class="live-det__plate">${det.plate}</div>
-                    <div class="live-det__meta">
-                        <span class="live-det__type">${det.type}</span>
-                        <span class="live-det__time">${det.time}</span>
-                    </div>
-                `;
-                        list.insertBefore(item, list.firstChild);
-                    });
-                    document.getElementById('detection-counter').textContent = detectionCount;
-
-                    // Remove empty state
                     const empty = list.querySelector('.empty-state');
                     if (empty) empty.remove();
+
+                    list.innerHTML = '';
+                    data.recent.forEach(det => {
+                        const item = document.createElement('div');
+                        item.className = 'live-detection-item';
+                        item.innerHTML = `
+                            <div class="live-det__plate">${det.plate}</div>
+                            <div class="live-det__meta">
+                                <span class="live-det__type">${det.type}</span>
+                                <span class="live-det__time">${det.time}</span>
+                            </div>
+                        `;
+                        list.appendChild(item);
+                    });
                 }
             })
-            .catch(err => {
-                btn.classList.remove('loading');
-                btn.disabled = false;
-            });
+            .catch(() => {});
     }
 
-    function applySource() {
-        const source = document.getElementById('camera-source-input').value;
-        window.location.href = `{% url 'vehicles:live_feed' %}?source=${encodeURIComponent(source)}`;
-    }
+    // Poll every 5 seconds
+    setInterval(updateStats, 5000);
+    updateStats();
 
-    // Handle video feed errors
+    // Handle video feed events
     document.getElementById('video-feed').addEventListener('load', function () {
         document.getElementById('video-overlay').style.display = 'none';
     });
@@ -256,7 +206,7 @@
                 <line x1="9" y1="9" x2="15" y2="15"/>
             </svg>
             <span>Camera not available</span>
-            <button class="btn btn--primary btn--sm" onclick="setFeedMode(currentMode)">Retry</button>
+            <button class="btn btn--primary btn--sm" onclick="location.reload()">Retry</button>
         </div>
     `;
         document.getElementById('video-overlay').style.display = 'flex';
