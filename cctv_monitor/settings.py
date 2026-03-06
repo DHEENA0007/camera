@@ -92,3 +92,8 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # Camera settings
 CAMERA_SOURCE = 0  # 0 for default webcam, or RTSP URL for IP camera
 # Example RTSP: "rtsp://username:password@ip_address:port/stream"
+
+# Plate Recognizer API Settings (Online Model)
+# Get your API key from https://platerecognizer.com/
+PLATE_RECOGNIZER_API_KEY = os.environ.get('PLATE_RECOGNIZER_API_KEY', '')
+ALPR_MODE = 'local' # 'local' or 'online'

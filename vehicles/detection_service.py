@@ -84,6 +84,7 @@ class CentroidTracker:
         self.disappeared = OrderedDict()   # id -> frame count since last seen
         self.plate_texts = OrderedDict()   # id -> best plate text
         self.plate_confs = OrderedDict()   # id -> best plate confidence
+        self.plate_texts_history = OrderedDict() # id -> list of (text, conf, crop_info)
         self.saved = OrderedDict()         # id -> True if saved to DB
         self.max_disappeared = max_disappeared
         self.max_distance = max_distance
@@ -95,6 +96,9 @@ class CentroidTracker:
         self.disappeared[object_id] = 0
         self.plate_texts[object_id] = plate_text
         self.plate_confs[object_id] = plate_conf
+        self.plate_texts_history[object_id] = []
+        if plate_text:
+            self.plate_texts_history[object_id].append(plate_text)
         self.saved[object_id] = False
         self.next_object_id += 1
         return object_id
@@ -105,7 +109,104 @@ class CentroidTracker:
         del self.disappeared[object_id]
         del self.plate_texts[object_id]
         del self.plate_confs[object_id]
+        del self.plate_texts_history[object_id]
         del self.saved[object_id]
+
+    def get_consensus_plate(self, object_id):
+        """
+        Structural Plate Merger for Indian Format:
+        Uses suffix-prefix overlap to join fragments and regex for correction.
+        """
+        candidates = self.plate_texts_history.get(object_id, [])
+        if not candidates:
+            return self.plate_texts.get(object_id)
+            
+        # 1. Clean candidates (remove noise and normalize)
+        clean_candidates = []
+        for c in candidates:
+            # Strip non-alphanumeric noise from edges
+            c = re.sub(r'^[^A-Z0-9]+|[^A-Z0-9]+$', '', c.upper())
+            if len(c) >= 3:
+                clean_candidates.append(c)
+        
+        if not clean_candidates: return self.plate_texts.get(object_id)
+
+        # 2. Iteratively merge fragments using overlap
+        # We start with the longest one as base
+        clean_candidates.sort(key=len, reverse=True)
+        merged = clean_candidates[0]
+        
+        for c in clean_candidates[1:]:
+            merged = self._merge_strings(merged, c)
+
+        # 3. Post-processing for Indian Format (e.g., HR26DQ5551)
+        # Structure: [State 2L][Dist 2D][Series 1-2L][Num 4D]
+        
+        # OCR Corrections for Indian Slots
+        # Common errors: '0' -> 'D', '1' -> 'I' or 'H', '5' -> 'S', '8' -> 'B'
+        
+        def fix_indian_format(p):
+            # Try to extract the core pattern
+            # Pattern: 2 Letters + 2 Digits + 1-2 Letters + 1-4 Digits
+            res = list(p)
+            # Fix State Code (First 2 chars must be letters)
+            for i in range(min(2, len(res))):
+                if res[i] == '0': res[i] = 'D'
+                if res[i] == '2': res[i] = 'Z'
+                if res[i] == '5': res[i] = 'S'
+                if res[i] == '8': res[i] = 'B'
+                if res[i].isdigit(): 
+                     # Heuristic: If it's the very start, it's likely a letter
+                     # but we only flip if we are reasonably sure
+                     pass
+
+            # Fix District Code (Chars 3-4 must be digits)
+            for i in range(2, min(4, len(res))):
+                if res[i] == 'D': res[i] = '0'
+                if res[i] == 'Z': res[i] = '2'
+                if res[i] == 'S': res[i] = '5'
+                if res[i] == 'B': res[i] = '8'
+                if res[i] == 'Q': res[i] = '0'
+                
+            return "".join(res)
+
+        final_res = fix_indian_format(merged)
+        
+        # If the merged result doesn't start with a known state but a fragment does
+        # (e.g. '26DQ5551' merged but 'HR26' was also seen)
+        if not any(final_res.startswith(state) for state in ['HR', 'DL', 'UP', 'MH', 'KA', 'TN']):
+            for c in clean_candidates:
+                if any(c.startswith(state) for state in ['HR', 'DL', 'UP', 'MH', 'KA', 'TN']):
+                    # Prefix the state if the following digits match
+                    if len(c) >= 4 and c[2:4] == final_res[:2]:
+                         final_res = c[:2] + final_res
+                         break
+        
+        return final_res
+
+    def _merge_strings(self, s1, s2):
+        """Find max overlap between s1 and s2 to stitch them together."""
+        if s2 in s1: return s1
+        if s1 in s2: return s2
+        
+        # Maximize overlap of suffix s1 with prefix s2
+        best_overlap = 0
+        merged = s1 + s2
+        
+        # Minimum overlap of 2 chars to avoid accidental joins
+        for i in range(2, min(len(s1), len(s2)) + 1):
+            if s1[-i:] == s2[:i]:
+                best_overlap = i
+                merged = s1 + s2[i:]
+        
+        # Check prefix of s1 with suffix of s2
+        for i in range(2, min(len(s1), len(s2)) + 1):
+            if s2[-i:] == s1[:i]:
+                if i > best_overlap:
+                    best_overlap = i
+                    merged = s2 + s1[i:]
+        
+        return merged
 
     def update(self, detections):
         """
@@ -167,9 +268,18 @@ class CentroidTracker:
                 self.disappeared[obj_id] = 0
 
                 # Update plate if new one is better
-                if input_plates[col] and input_confs[col] > self.plate_confs.get(obj_id, 0):
-                    self.plate_texts[obj_id] = input_plates[col]
-                    self.plate_confs[obj_id] = input_confs[col]
+                if input_plates[col]:
+                    if obj_id not in self.plate_texts_history:
+                        self.plate_texts_history[obj_id] = []
+                    
+                    self.plate_texts_history[obj_id].append(input_plates[col])
+                    # Keep only last 15 candidates
+                    if len(self.plate_texts_history[obj_id]) > 15:
+                        self.plate_texts_history[obj_id].pop(0)
+
+                    if input_confs[col] > self.plate_confs.get(obj_id, 0):
+                        self.plate_texts[obj_id] = input_plates[col]
+                        self.plate_confs[obj_id] = input_confs[col]
 
                 used_rows.add(row)
                 used_cols.add(col)
@@ -191,10 +301,76 @@ class CentroidTracker:
         return self.objects
 
 
-# Global tracker instance
-vehicle_tracker = CentroidTracker(max_disappeared=40, max_distance=100)
+# ============================================================
+# Plate De-Duplication Logic (Fuzzy)
+# ============================================================
+
+def get_levenshtein_distance(s1, s2):
+    if len(s1) < len(s2):
+        return get_levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    previous_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+    return previous_row[-1]
+
+def get_string_similarity(s1, s2):
+    if not s1 or not s2: return 0
+    dist = get_levenshtein_distance(s1, s2)
+    return 1.0 - (dist / max(len(s1), len(s2)))
+
+class PlateDeDuplicator:
+    """
+    Prevents counting the same license plate multiple times using FUZZY matching.
+    """
+    def __init__(self, cooldown_seconds=300, similarity_threshold=0.7):
+        self.seen_plates = {} # plate -> last_seen_time
+        self.cooldown = cooldown_seconds
+        self.similarity_threshold = similarity_threshold
+
+    def is_duplicate(self, plate_text):
+        if not plate_text or plate_text == 'UNREADABLE':
+            return False
+            
+        now = time.time()
+        
+        # Fuzzy check against recently seen plates
+        for seen_text, last_seen in list(self.seen_plates.items()):
+            if now - last_seen > self.cooldown:
+                continue
+                
+            similarity = get_string_similarity(plate_text, seen_text)
+            if similarity >= self.similarity_threshold:
+                # Update the record with the longer/better version of the plate
+                self.seen_plates[seen_text] = now
+                if len(plate_text) > len(seen_text) and get_alpr(): # Check if it's a better read
+                     # We don't replace keys in dict easily while iterating, but next 
+                     # time this improved text will be the anchor.
+                     pass 
+                return True
+        
+        self.seen_plates[plate_text] = now
+        self._cleanup()
+        return False
+
+    def _cleanup(self):
+        now = time.time()
+        expired = [p for p, t in self.seen_plates.items() if now - t > self.cooldown * 2]
+        for p in expired:
+            del self.seen_plates[p]
+
+# Global instances
+plate_deduper = PlateDeDuplicator(cooldown_seconds=300, similarity_threshold=0.7)
+vehicle_tracker = CentroidTracker(max_disappeared=90, max_distance=150) # Increased persistence for high-speed
 total_vehicles_counted = 0
-detected_plates_log = []  # Recent plate detections for HUD display
+detected_plates_log = []
 
 
 # ============================================================
@@ -318,10 +494,39 @@ def generate_video_feed(source=0):
 
 def detect_vehicles_in_frame(frame):
     """
-    Detection pipeline using OpenALPR.
-    OpenALPR detects the plate directly, so we infer "vehicle" presence
-    around the plate region rather than doing full YOLO.
+    Detection pipeline using either local OpenALPR or Online API.
     """
+    mode = getattr(settings, 'ALPR_MODE', 'local')
+    
+    # Pre-encode frame for both local and online
+    ret, enc = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    if not ret:
+        return []
+    frame_bytes = enc.tobytes()
+
+    if mode == 'online':
+        from .online_services import PlateRecognizerService
+        detections = PlateRecognizerService.recognize(frame_bytes)
+        # For online results, we might need to fix up the vehicle crop if it's missing
+        for det in detections:
+            if 'vehicle_crop' not in det:
+                x1, y1, x2, y2 = det['bbox']
+                # Expand box slightly for vehicle view if bbox is just the plate
+                if det.get('plate_bbox') == det['bbox']:
+                    pw = x2 - x1
+                    ph = y2 - y1
+                    x1 = max(0, x1 - int(pw * 1.5))
+                    y1 = max(0, y1 - int(ph * 4))
+                    x2 = min(frame.shape[1], x1 + int(pw * 4))
+                    y2 = min(frame.shape[0], y1 + int(ph * 6))
+                    det['bbox'] = (x1, y1, x2, y2)
+                
+                det['vehicle_crop'] = frame[y1:y2, x1:x2]
+                px, py, pw, ph = det['plate_bbox']
+                det['plate_img'] = frame[py:py+ph, px:px+pw]
+        return detections
+
+    # Local Mode (Default)
     alpr = get_alpr()
     detections = []
     
@@ -329,13 +534,7 @@ def detect_vehicles_in_frame(frame):
         return detections
 
     try:
-        # OpenALPR Python bindings take raw image bytes or file paths
-        # We need to encode the OpenCV frame to jpeg bytes first
-        ret, enc = cv2.imencode('.jpg', frame)
-        if not ret:
-            return detections
-            
-        results = alpr.recognize_array(enc.tobytes())
+        results = alpr.recognize_array(frame_bytes)
         
         for plate_result in results.get('results', []):
             if not plate_result.get('candidates'):
@@ -343,9 +542,8 @@ def detect_vehicles_in_frame(frame):
                 
             best_plate = plate_result['candidates'][0]
             plate_text = best_plate['plate']
-            conf = best_plate['confidence'] / 100.0  # Normalize to 0.0 - 1.0
+            conf = best_plate['confidence'] / 100.0
             
-            # Extract plate coordinates
             coords = plate_result['coordinates']
             x_min = min(c['x'] for c in coords)
             y_min = min(c['y'] for c in coords)
@@ -356,28 +554,20 @@ def detect_vehicles_in_frame(frame):
             ph = y_max - y_min
             plate_bbox = (x_min, y_min, pw, ph)
             
-            # Estimate a vehicle bounding box around the plate
-            # Typically a car is about 3-5x wider than a license plate and much taller
-            vw = int(pw * 4)
-            vh = int(ph * 6)
-            
-            # Center roughly around plate
+            # Estimate vehicle bounding box
             vx1 = max(0, x_min - int(pw * 1.5))
             vy1 = max(0, y_min - int(ph * 4))
-            vx2 = min(frame.shape[1], vx1 + vw)
-            vy2 = min(frame.shape[0], vy1 + vh)
-            
-            vehicle_crop = frame[vy1:vy2, vx1:vx2]
-            plate_img = frame[y_min:y_max, x_min:x_max]
+            vx2 = min(frame.shape[1], vx1 + int(pw * 4))
+            vy2 = min(frame.shape[0], vy1 + int(ph * 6))
             
             detections.append({
-                'type': 'car', # OpenALPR only reads plates, so we guess 'car'
+                'type': 'car',
                 'plate': plate_text,
                 'plate_conf': conf,
-                'confidence': conf, # using plate conf as overall confidence
+                'confidence': conf,
                 'bbox': (vx1, vy1, vx2, vy2),
-                'vehicle_crop': vehicle_crop,
-                'plate_img': plate_img,
+                'vehicle_crop': frame[vy1:vy2, vx1:vx2],
+                'plate_img': frame[y_min:y_max, x_min:x_max],
                 'plate_bbox': plate_bbox,
             })
             
@@ -424,6 +614,25 @@ def draw_highway_hud(frame, detections, tracker):
         'auto': (255, 255, 0),
         'unknown': (180, 180, 180),
     }
+
+    # --- Draw Header HUD ---
+    cv2.rectangle(annotated, (0, 0), (w, 60), COLOR_HUD_BG, -1)
+    cv2.line(annotated, (0, 60), (w, 60), (100, 100, 100), 1)
+
+    # Mode indicator
+    mode = getattr(settings, 'ALPR_MODE', 'local').upper()
+    mode_color = (0, 255, 0) if mode == 'LOCAL' else (0, 200, 255)
+    cv2.putText(annotated, f"ENGINE: {mode}", (20, 35),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, mode_color, 2, cv2.LINE_AA)
+
+    # Counter
+    count_str = f"VEHICLES: {total_vehicles_counted}"
+    cv2.putText(annotated, count_str, (w - 250, 35),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+    
+    # Pulse detection indicator
+    if len(detections) > 0:
+        cv2.circle(annotated, (w - 30, 30), 10, (0, 0, 255), -1)
 
     # --- Update tracker ---
     tracker_dets = []
@@ -528,18 +737,37 @@ def draw_highway_hud(frame, detections, tracker):
 
         # --- Track and count new vehicles across the entire full cam view ---
         if not tracker.saved.get(obj_id, False):
-            tracker.saved[obj_id] = True
-            total_vehicles_counted += 1
-            if plate_text:
-                detected_plates_log.insert(0, {
-                    'plate': plate_text,
-                    'type': det_type,
-                    'time': datetime.now().strftime('%H:%M:%S'),
-                    'id': obj_id,
-                })
-                # Keep only last 10
-                if len(detected_plates_log) > 10:
-                    detected_plates_log.pop()
+            # Check if we have enough "shots" (readings) to merge
+            candidates = tracker.plate_texts_history.get(obj_id, [])
+            
+            # We wait for at least 5 shots for better fusion
+            if len(candidates) >= 5:
+                tracker.saved[obj_id] = True
+                plate_text = tracker.get_consensus_plate(obj_id)
+                
+                # Check fuzzy duplicates (is this car already in the log?)
+                is_new = True
+                if plate_text:
+                    if plate_deduper.is_duplicate(plate_text):
+                        is_new = False
+                        logger.info(f"Fuzzy duplicate suppressed: {plate_text}")
+                
+                if is_new:
+                    total_vehicles_counted += 1
+                    # Log it
+                    detected_plates_log.insert(0, {
+                        'plate': plate_text or 'UNKNOWN',
+                        'type': det_type,
+                        'time': datetime.now().strftime('%H:%M:%S'),
+                        'id': obj_id,
+                        'shots': len(candidates)
+                    })
+                    if len(detected_plates_log) > 10:
+                        detected_plates_log.pop()
+                    
+                    # Store consensus back to tracker for display
+                    if plate_text:
+                        tracker.plate_texts[obj_id] = plate_text
 
     return annotated
 
@@ -716,19 +944,50 @@ def generate_detection_feed(source=0):
                     # Process new detections (save to DB)
                     for det in last_detections:
                         plate = det.get('plate')
-                        if plate and plate not in saved_plates:
-                            try:
-                                save_detection(det)
-                                saved_plates.add(plate)
-                                logger.info(f"Saved plate: {plate}")
-                            except Exception as e:
-                                logger.error(f"Save error: {e}")
+                        if plate:
+                            # Use plate_deduper for DB saving as well
+                            # We already updated it once in draw_highway_hud, 
+                            # but check again if it was actually saved to DB
+                            if not plate_deduper.is_duplicate(plate):
+                                try:
+                                    save_detection(det)
+                                    logger.info(f"Saved unique plate to DB: {plate}")
+                                except Exception as e:
+                                    logger.error(f"Save error: {e}")
+                            else:
+                                # Even if it's a duplicate for counting, maybe we want to update the log
+                                # but usually we just skip saving to avoid DB bloat
+                                pass
                                 
                 except queue.Empty:
                     pass # Keep using last_detections
 
                 # Draw HUD on every frame (using last known detections)
                 annotated = draw_highway_hud(frame, last_detections, vehicle_tracker)
+                
+                # Check for vehicles that just got "saved" (consensus reached) 
+                # in the HUD draw loop and save them to DB
+                for obj_id in list(vehicle_tracker.saved.keys()):
+                    if vehicle_tracker.saved[obj_id] and obj_id not in saved_plates:
+                        # Find the best crop for this vehicle
+                        # For simplicity, we use the current detection if it matches the ID
+                        consensus_plate = vehicle_tracker.plate_texts.get(obj_id)
+                        if consensus_plate:
+                            # Trigger DB save
+                            for det in last_detections:
+                                # Heuristic: if detection overlaps with tracker bbox
+                                if consensus_plate in (det.get('plate'), ''): # simplified
+                                    # Actually, we need to pass the consensus_plate to save_detection
+                                    det_copy = det.copy()
+                                    det_copy['plate'] = consensus_plate
+                                    try:
+                                        if not plate_deduper.is_duplicate(consensus_plate):
+                                            save_detection(det_copy)
+                                            saved_plates.add(obj_id) # Track internal ID to avoid re-saving
+                                            logger.info(f"💾 Saved MERGED plate to DB: {consensus_plate}")
+                                    except Exception as e:
+                                        logger.error(f"Save error: {e}")
+                                    break
                 
                 ret, jpeg = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
                 
