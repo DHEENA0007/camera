@@ -33,6 +33,27 @@ detection_thread = None
 alpr_instance = None
 alpr_lock = threading.Lock()
 
+# Lazy-loaded YOLOv8 model
+yolo_model = None
+yolo_lock = threading.Lock()
+
+# COCO class IDs for vehicles
+VEHICLE_CLASSES = {2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
+
+def get_yolo():
+    """Lazy load YOLOv8 model for vehicle detection."""
+    global yolo_model
+    with yolo_lock:
+        if yolo_model is None:
+            try:
+                from ultralytics import YOLO
+                yolo_model = YOLO('yolov8n.pt')
+                logger.info("YOLOv8 model loaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to load YOLOv8: {e}")
+                yolo_model = False
+        return yolo_model if yolo_model is not False else None
+
 def get_alpr():
     """Lazy load OpenALPR engine."""
     global alpr_instance
@@ -55,12 +76,13 @@ def get_alpr():
                 # We can request "in" if it exists, otherwise fallback to "us" if it fails.
                 # Here we attempt whatever dataset you prefer, but "us" is safely in the defaults folder usually.
                 alpr_instance = Alpr("us", conf_path, runtime_path)
-                
+
                 if not getattr(alpr_instance, 'loaded', getattr(alpr_instance, 'is_loaded', lambda: False)()):
                     logger.error("Error loading OpenALPR engine. Checking for DLL footprint failure.")
                     alpr_instance = None
                 else:
-                    alpr_instance.set_top_n(3)
+                    alpr_instance.set_top_n(7)
+                    alpr_instance.set_detect_region(False)
                     logger.info("OpenALPR loaded successfully")
             except Exception as e:
                 logger.error(f"Failed to load OpenALPR: {e}")
@@ -114,99 +136,139 @@ class CentroidTracker:
 
     def get_consensus_plate(self, object_id):
         """
-        Structural Plate Merger for Indian Format:
-        Uses suffix-prefix overlap to join fragments and regex for correction.
+        Build consensus plate from multiple partial reads.
+
+        Strategy:
+        1. Pick the longest reads as the best full-plate candidates.
+        2. Use character-position voting across aligned reads.
+        3. Apply Indian plate format correction.
         """
         candidates = self.plate_texts_history.get(object_id, [])
         if not candidates:
             return self.plate_texts.get(object_id)
-            
-        # 1. Clean candidates (remove noise and normalize)
-        clean_candidates = []
+
+        # Clean all candidates
+        clean = []
         for c in candidates:
-            # Strip non-alphanumeric noise from edges
-            c = re.sub(r'^[^A-Z0-9]+|[^A-Z0-9]+$', '', c.upper())
-            if len(c) >= 3:
-                clean_candidates.append(c)
-        
-        if not clean_candidates: return self.plate_texts.get(object_id)
+            c = re.sub(r'[^A-Z0-9]', '', c.upper())
+            if len(c) >= 4:
+                clean.append(c)
 
-        # 2. Iteratively merge fragments using overlap
-        # We start with the longest one as base
-        clean_candidates.sort(key=len, reverse=True)
-        merged = clean_candidates[0]
-        
-        for c in clean_candidates[1:]:
-            merged = self._merge_strings(merged, c)
+        if not clean:
+            return self.plate_texts.get(object_id)
 
-        # 3. Post-processing for Indian Format (e.g., HR26DQ5551)
-        # Structure: [State 2L][Dist 2D][Series 1-2L][Num 4D]
-        
-        # OCR Corrections for Indian Slots
-        # Common errors: '0' -> 'D', '1' -> 'I' or 'H', '5' -> 'S', '8' -> 'B'
-        
-        def fix_indian_format(p):
-            # Try to extract the core pattern
-            # Pattern: 2 Letters + 2 Digits + 1-2 Letters + 1-4 Digits
-            res = list(p)
-            # Fix State Code (First 2 chars must be letters)
-            for i in range(min(2, len(res))):
-                if res[i] == '0': res[i] = 'D'
-                if res[i] == '2': res[i] = 'Z'
-                if res[i] == '5': res[i] = 'S'
-                if res[i] == '8': res[i] = 'B'
-                if res[i].isdigit(): 
-                     # Heuristic: If it's the very start, it's likely a letter
-                     # but we only flip if we are reasonably sure
-                     pass
+        # Group by length and find the most common full-length reads
+        from collections import Counter
+        length_counts = Counter(len(c) for c in clean)
+        # The true plate length is likely the most common length among longer reads
+        # Filter to lengths that appear at least twice, or just take the mode of longer ones
+        long_reads = [c for c in clean if len(c) >= max(len(x) for x in clean) - 2]
 
-            # Fix District Code (Chars 3-4 must be digits)
-            for i in range(2, min(4, len(res))):
-                if res[i] == 'D': res[i] = '0'
-                if res[i] == 'Z': res[i] = '2'
-                if res[i] == 'S': res[i] = '5'
-                if res[i] == 'B': res[i] = '8'
-                if res[i] == 'Q': res[i] = '0'
-                
-            return "".join(res)
+        if not long_reads:
+            long_reads = clean
 
-        final_res = fix_indian_format(merged)
-        
-        # If the merged result doesn't start with a known state but a fragment does
-        # (e.g. '26DQ5551' merged but 'HR26' was also seen)
-        if not any(final_res.startswith(state) for state in ['HR', 'DL', 'UP', 'MH', 'KA', 'TN']):
-            for c in clean_candidates:
-                if any(c.startswith(state) for state in ['HR', 'DL', 'UP', 'MH', 'KA', 'TN']):
-                    # Prefix the state if the following digits match
-                    if len(c) >= 4 and c[2:4] == final_res[:2]:
-                         final_res = c[:2] + final_res
-                         break
-        
-        return final_res
+        # Frequency vote: count exact occurrences, pick the most common
+        freq = Counter(long_reads)
+        best_text, best_count = freq.most_common(1)[0]
 
-    def _merge_strings(self, s1, s2):
-        """Find max overlap between s1 and s2 to stitch them together."""
-        if s2 in s1: return s1
-        if s1 in s2: return s2
-        
-        # Maximize overlap of suffix s1 with prefix s2
-        best_overlap = 0
-        merged = s1 + s2
-        
-        # Minimum overlap of 2 chars to avoid accidental joins
-        for i in range(2, min(len(s1), len(s2)) + 1):
-            if s1[-i:] == s2[:i]:
-                best_overlap = i
-                merged = s1 + s2[i:]
-        
-        # Check prefix of s1 with suffix of s2
-        for i in range(2, min(len(s1), len(s2)) + 1):
-            if s2[-i:] == s1[:i]:
-                if i > best_overlap:
-                    best_overlap = i
-                    merged = s2 + s1[i:]
-        
-        return merged
+        # If we have a clear winner (seen 2+ times), use it directly
+        if best_count >= 2:
+            return self._fix_indian_format(best_text)
+
+        # Otherwise, use character-position voting on the longest reads
+        # Align reads by trying to find the best alignment offset
+        target_len = len(long_reads[0])
+        # Use the longest read as anchor
+        anchor = max(long_reads, key=len)
+        target_len = len(anchor)
+
+        # Build a character vote matrix
+        votes = [Counter() for _ in range(target_len)]
+
+        for read in clean:
+            # Try to align this read to the anchor via substring match
+            offset = self._find_best_alignment(anchor, read)
+            if offset is not None:
+                for i, ch in enumerate(read):
+                    pos = offset + i
+                    if 0 <= pos < target_len:
+                        votes[pos][ch] += 1
+
+        # Build consensus from votes
+        result = []
+        for pos_votes in votes:
+            if pos_votes:
+                result.append(pos_votes.most_common(1)[0][0])
+            elif result:
+                # Gap in the middle - shouldn't happen normally
+                break
+
+        consensus = ''.join(result)
+        return self._fix_indian_format(consensus) if consensus else self.plate_texts.get(object_id)
+
+    def _find_best_alignment(self, anchor, read):
+        """Find the best offset to align `read` within `anchor`."""
+        if read in anchor:
+            return anchor.index(read)
+
+        # Try substring matching with 1 char tolerance
+        best_offset = None
+        best_score = 0
+        for offset in range(-(len(read) - 2), len(anchor)):
+            score = 0
+            count = 0
+            for i, ch in enumerate(read):
+                pos = offset + i
+                if 0 <= pos < len(anchor):
+                    count += 1
+                    if anchor[pos] == ch:
+                        score += 1
+            if count >= min(3, len(read)) and score > best_score:
+                best_score = score
+                best_offset = offset
+
+        # Only accept if at least 50% of overlapping chars match
+        if best_offset is not None and best_score >= max(2, len(read) * 0.4):
+            return best_offset
+        return 0  # Default: align at start
+
+    def _fix_indian_format(self, plate):
+        """
+        Apply Indian license plate format corrections.
+        Indian format: [State 2L][District 2D][Series 1-3L][Number 1-4D]
+        e.g., 22BH6517A -> correct is a BH-series plate
+        """
+        if not plate or len(plate) < 4:
+            return plate
+
+        res = list(plate)
+
+        # Common OCR digit<->letter confusions
+        digit_to_letter = {'0': 'O', '1': 'I', '2': 'Z', '5': 'S', '8': 'B', '6': 'G'}
+        letter_to_digit = {'O': '0', 'I': '1', 'Z': '2', 'S': '5', 'B': '8', 'G': '6', 'D': '0', 'Q': '0'}
+
+        # Try to detect Indian format by pattern matching
+        # Pattern: 2 letters, 2 digits, 1-3 letters, 1-4 digits
+        # Also handle BH-series (Bharat series): 2 digits, BH, 4 digits, 1-2 letters
+
+        # Check if this looks like a BH-series plate: ##BH####X
+        bh_match = re.match(r'^(\d{2})(BH|8H|6H)(\d{3,4})([A-Z]{1,2})?$', plate)
+        if bh_match:
+            # BH-series format is correct as-is, just clean it
+            return plate
+
+        # Standard Indian format: LL DD LLL DDDD
+        # Fix first 2 chars to be letters (state code)
+        for i in range(min(2, len(res))):
+            if res[i] in digit_to_letter and res[i].isdigit():
+                res[i] = digit_to_letter[res[i]]
+
+        # Fix chars at position 2-3 to be digits (district code)
+        for i in range(2, min(4, len(res))):
+            if res[i] in letter_to_digit and res[i].isalpha():
+                res[i] = letter_to_digit[res[i]]
+
+        return ''.join(res)
 
     def update(self, detections):
         """
@@ -273,8 +335,8 @@ class CentroidTracker:
                         self.plate_texts_history[obj_id] = []
                     
                     self.plate_texts_history[obj_id].append(input_plates[col])
-                    # Keep only last 15 candidates
-                    if len(self.plate_texts_history[obj_id]) > 15:
+                    # Keep only last 25 candidates for better voting
+                    if len(self.plate_texts_history[obj_id]) > 25:
                         self.plate_texts_history[obj_id].pop(0)
 
                     if input_confs[col] > self.plate_confs.get(obj_id, 0):
@@ -492,26 +554,127 @@ def generate_video_feed(source=0):
         time.sleep(0.033)
 
 
+def _merge_plate_results(plate_results, frame_h, frame_w):
+    """
+    Merge overlapping/nearby plate detections from OpenALPR.
+    OpenALPR sometimes returns split reads for the same plate region.
+    Keep only the highest-confidence result for each physical plate location.
+    """
+    if len(plate_results) <= 1:
+        return plate_results
+
+    # Extract bounding boxes and sort by confidence (highest first)
+    items = []
+    for pr in plate_results:
+        if not pr.get('candidates'):
+            continue
+        coords = pr['coordinates']
+        px_min = min(c['x'] for c in coords)
+        py_min = min(c['y'] for c in coords)
+        px_max = max(c['x'] for c in coords)
+        py_max = max(c['y'] for c in coords)
+        cx = (px_min + px_max) / 2
+        cy = (py_min + py_max) / 2
+        conf = pr['candidates'][0]['confidence']
+        items.append({'result': pr, 'cx': cx, 'cy': cy,
+                       'x1': px_min, 'y1': py_min, 'x2': px_max, 'y2': py_max,
+                       'conf': conf})
+
+    items.sort(key=lambda x: x['conf'], reverse=True)
+
+    merged = []
+    used = set()
+    for i, item in enumerate(items):
+        if i in used:
+            continue
+        merged.append(item['result'])
+        used.add(i)
+        # Suppress any overlapping or nearby detections
+        for j in range(i + 1, len(items)):
+            if j in used:
+                continue
+            other = items[j]
+            # Check if centers are close (within 1.5x plate width)
+            plate_w = item['x2'] - item['x1']
+            plate_h = item['y2'] - item['y1']
+            dist_x = abs(item['cx'] - other['cx'])
+            dist_y = abs(item['cy'] - other['cy'])
+            if dist_x < plate_w * 1.5 and dist_y < plate_h * 1.5:
+                used.add(j)  # Suppress this lower-confidence duplicate
+
+    return merged
+
+
+def _associate_plate_to_vehicle(plate_coords, vehicle_boxes, frame_h, frame_w):
+    """
+    Associate a detected plate with the best matching YOLO vehicle box.
+    Returns (vehicle_box_index, vehicle_type, vehicle_conf) or (None, 'car', 0.0).
+    """
+    px_min = min(c['x'] for c in plate_coords)
+    py_min = min(c['y'] for c in plate_coords)
+    px_max = max(c['x'] for c in plate_coords)
+    py_max = max(c['y'] for c in plate_coords)
+    plate_cx = (px_min + px_max) / 2
+    plate_cy = (py_min + py_max) / 2
+
+    best_idx = None
+    best_score = -1
+
+    for idx, vbox in enumerate(vehicle_boxes):
+        vx1, vy1, vx2, vy2, vtype, vconf = vbox
+        # Check if plate center is inside or near the vehicle box
+        if vx1 <= plate_cx <= vx2 and vy1 <= plate_cy <= vy2:
+            # Plate is inside vehicle — prefer smaller (tighter) vehicle boxes
+            area = (vx2 - vx1) * (vy2 - vy1)
+            score = 1000000.0 / max(area, 1)  # Smaller area = higher score
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+        else:
+            # Plate is outside — check distance to vehicle center
+            vcx = (vx1 + vx2) / 2
+            vcy = (vy1 + vy2) / 2
+            dist = math.sqrt((plate_cx - vcx) ** 2 + (plate_cy - vcy) ** 2)
+            vw = vx2 - vx1
+            vh = vy2 - vy1
+            # Only consider if plate is reasonably close (within vehicle diagonal)
+            max_dist = math.sqrt(vw ** 2 + vh ** 2) * 0.7
+            if dist < max_dist:
+                score = 1.0 / max(dist, 1)
+                if score > best_score:
+                    best_score = score
+                    best_idx = idx
+
+    if best_idx is not None:
+        return best_idx, vehicle_boxes[best_idx][4], vehicle_boxes[best_idx][5]
+    return None, 'car', 0.0
+
+
 def detect_vehicles_in_frame(frame):
     """
-    Detection pipeline using either local OpenALPR or Online API.
+    VaxALPR-style detection pipeline (plate-first approach):
+      1. Run OpenALPR on the FULL FRAME to find all plates (plate-first)
+      2. Run YOLOv8 to find all vehicles (provides vehicle type & bounding box)
+      3. Associate each plate with its nearest vehicle
+      4. For vehicles without plates, still include them (for counting)
+
+    This approach is superior because:
+    - OpenALPR has its own built-in plate detector optimized for finding plates
+    - Running on full frame avoids cropping issues that cause split/partial reads
+    - YOLO provides vehicle classification context, not plate finding
     """
     mode = getattr(settings, 'ALPR_MODE', 'local')
-    
-    # Pre-encode frame for both local and online
-    ret, enc = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-    if not ret:
-        return []
-    frame_bytes = enc.tobytes()
 
     if mode == 'online':
+        ret, enc = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        if not ret:
+            return []
+        frame_bytes = enc.tobytes()
         from .online_services import PlateRecognizerService
         detections = PlateRecognizerService.recognize(frame_bytes)
-        # For online results, we might need to fix up the vehicle crop if it's missing
         for det in detections:
             if 'vehicle_crop' not in det:
                 x1, y1, x2, y2 = det['bbox']
-                # Expand box slightly for vehicle view if bbox is just the plate
                 if det.get('plate_bbox') == det['bbox']:
                     pw = x2 - x1
                     ph = y2 - y1
@@ -520,59 +683,139 @@ def detect_vehicles_in_frame(frame):
                     x2 = min(frame.shape[1], x1 + int(pw * 4))
                     y2 = min(frame.shape[0], y1 + int(ph * 6))
                     det['bbox'] = (x1, y1, x2, y2)
-                
                 det['vehicle_crop'] = frame[y1:y2, x1:x2]
                 px, py, pw, ph = det['plate_bbox']
                 det['plate_img'] = frame[py:py+ph, px:px+pw]
         return detections
 
-    # Local Mode (Default)
-    alpr = get_alpr()
+    # --- Local Mode: OpenALPR (full frame) + YOLO ---
+    h, w = frame.shape[:2]
     detections = []
-    
-    if alpr is None:
-        return detections
 
-    try:
-        results = alpr.recognize_array(frame_bytes)
-        
-        for plate_result in results.get('results', []):
-            if not plate_result.get('candidates'):
-                continue
-                
-            best_plate = plate_result['candidates'][0]
-            plate_text = best_plate['plate']
-            conf = best_plate['confidence'] / 100.0
-            
-            coords = plate_result['coordinates']
-            x_min = min(c['x'] for c in coords)
-            y_min = min(c['y'] for c in coords)
-            x_max = max(c['x'] for c in coords)
-            y_max = max(c['y'] for c in coords)
-            
-            pw = x_max - x_min
-            ph = y_max - y_min
-            plate_bbox = (x_min, y_min, pw, ph)
-            
-            # Estimate vehicle bounding box
-            vx1 = max(0, x_min - int(pw * 1.5))
-            vy1 = max(0, y_min - int(ph * 4))
-            vx2 = min(frame.shape[1], vx1 + int(pw * 4))
-            vy2 = min(frame.shape[0], vy1 + int(ph * 6))
-            
-            detections.append({
-                'type': 'car',
-                'plate': plate_text,
-                'plate_conf': conf,
-                'confidence': conf,
-                'bbox': (vx1, vy1, vx2, vy2),
-                'vehicle_crop': frame[vy1:vy2, vx1:vx2],
-                'plate_img': frame[y_min:y_max, x_min:x_max],
-                'plate_bbox': plate_bbox,
-            })
-            
-    except Exception as e:
-        logger.error(f"OpenALPR detection error: {e}")
+    # ===== STEP 1: Run OpenALPR on the FULL FRAME =====
+    alpr = get_alpr()
+    plate_results = []  # Raw OpenALPR results
+
+    if alpr is not None:
+        try:
+            # Upscale if frame is small for better plate detection
+            scale = 1.0
+            process_frame = frame
+            if w < 800:
+                scale = 800.0 / w
+                process_frame = cv2.resize(frame, None, fx=scale, fy=scale,
+                                           interpolation=cv2.INTER_CUBIC)
+
+            ret, enc = cv2.imencode('.jpg', process_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            if ret:
+                alpr_raw = alpr.recognize_array(enc.tobytes())
+                raw_results = alpr_raw.get('results', [])
+
+                # Scale coordinates back to original frame size
+                if scale != 1.0:
+                    for pr in raw_results:
+                        for coord in pr.get('coordinates', []):
+                            coord['x'] = int(coord['x'] / scale)
+                            coord['y'] = int(coord['y'] / scale)
+
+                # Merge overlapping/split detections
+                plate_results = _merge_plate_results(raw_results, h, w)
+                if plate_results:
+                    plates_found = [pr['candidates'][0]['plate'] for pr in plate_results if pr.get('candidates')]
+                    logger.info(f"OpenALPR found {len(plate_results)} plates on full frame: {plates_found}")
+        except Exception as e:
+            logger.error(f"OpenALPR full-frame error: {e}")
+
+    # ===== STEP 2: Run YOLO for vehicle detection =====
+    vehicle_boxes = []  # (x1, y1, x2, y2, type, conf)
+    yolo = get_yolo()
+    if yolo is not None:
+        try:
+            results = yolo.predict(frame, conf=0.25, classes=list(VEHICLE_CLASSES.keys()),
+                                   verbose=False, imgsz=640)
+            boxes = results[0].boxes if results else []
+            logger.debug(f"YOLO detected {len(boxes)} vehicles")
+
+            for box in boxes:
+                cls_id = int(box.cls[0])
+                vehicle_type = VEHICLE_CLASSES.get(cls_id, 'car')
+                det_conf = float(box.conf[0])
+                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+                pad_x = int((x2 - x1) * 0.05)
+                pad_y = int((y2 - y1) * 0.05)
+                x1 = max(0, x1 - pad_x)
+                y1 = max(0, y1 - pad_y)
+                x2 = min(w, x2 + pad_x)
+                y2 = min(h, y2 + pad_y)
+                vehicle_boxes.append((x1, y1, x2, y2, vehicle_type, det_conf))
+        except Exception as e:
+            logger.error(f"YOLOv8 detection error: {e}")
+
+    # ===== STEP 3: Associate plates with vehicles =====
+    used_vehicles = set()
+
+    for plate_result in plate_results:
+        if not plate_result.get('candidates'):
+            continue
+
+        best_candidate = plate_result['candidates'][0]
+        plate_text = best_candidate['plate']
+        plate_conf = best_candidate['confidence'] / 100.0
+
+        coords = plate_result['coordinates']
+        px_min = min(c['x'] for c in coords)
+        py_min = min(c['y'] for c in coords)
+        px_max = max(c['x'] for c in coords)
+        py_max = max(c['y'] for c in coords)
+        pw = px_max - px_min
+        ph = py_max - py_min
+
+        # Find matching vehicle
+        veh_idx, veh_type, veh_conf = _associate_plate_to_vehicle(
+            coords, vehicle_boxes, h, w)
+
+        if veh_idx is not None:
+            used_vehicles.add(veh_idx)
+            vx1, vy1, vx2, vy2 = vehicle_boxes[veh_idx][:4]
+        else:
+            # No YOLO vehicle found — build a synthetic vehicle bbox around the plate
+            vx1 = max(0, px_min - pw)
+            vy1 = max(0, py_min - int(ph * 3))
+            vx2 = min(w, px_max + pw)
+            vy2 = min(h, py_max + int(ph * 1.5))
+            veh_type = 'car'
+            veh_conf = plate_conf
+
+        vehicle_crop = frame[vy1:vy2, vx1:vx2]
+        plate_img = frame[max(0, py_min):min(h, py_max), max(0, px_min):min(w, px_max)]
+
+        detections.append({
+            'type': veh_type,
+            'plate': plate_text,
+            'plate_conf': plate_conf,
+            'confidence': veh_conf,
+            'bbox': (vx1, vy1, vx2, vy2),
+            'vehicle_crop': vehicle_crop if vehicle_crop.size > 0 else None,
+            'plate_img': plate_img if plate_img.size > 0 else None,
+            'plate_bbox': (px_min, py_min, pw, ph),
+        })
+
+    # ===== STEP 4: Add vehicles without plates (for counting) =====
+    for idx, vbox in enumerate(vehicle_boxes):
+        if idx in used_vehicles:
+            continue
+        vx1, vy1, vx2, vy2, veh_type, veh_conf = vbox
+        vehicle_crop = frame[vy1:vy2, vx1:vx2]
+        detections.append({
+            'type': veh_type,
+            'plate': None,
+            'plate_conf': 0.0,
+            'confidence': veh_conf,
+            'bbox': (vx1, vy1, vx2, vy2),
+            'vehicle_crop': vehicle_crop if vehicle_crop.size > 0 else None,
+            'plate_img': None,
+            'plate_bbox': None,
+        })
 
     return detections
 
@@ -737,22 +980,27 @@ def draw_highway_hud(frame, detections, tracker):
 
         # --- Track and count new vehicles across the entire full cam view ---
         if not tracker.saved.get(obj_id, False):
-            # Check if we have enough "shots" (readings) to merge
+            # Check if we have enough readings for consensus
             candidates = tracker.plate_texts_history.get(obj_id, [])
-            
-            # We wait for at least 5 shots for better fusion
-            if len(candidates) >= 5:
-                tracker.saved[obj_id] = True
+            best_conf = tracker.plate_confs.get(obj_id, 0.0)
+
+            # Save when: 2+ readings OR 1 high-confidence reading (>70%)
+            # Full-frame ALPR gives good full plates, so we don't need many reads
+            if len(candidates) >= 2 or (len(candidates) >= 1 and best_conf > 0.70):
                 plate_text = tracker.get_consensus_plate(obj_id)
-                
+
                 # Check fuzzy duplicates (is this car already in the log?)
-                is_new = True
+                is_duplicate = False
                 if plate_text:
                     if plate_deduper.is_duplicate(plate_text):
-                        is_new = False
+                        is_duplicate = True
                         logger.info(f"Fuzzy duplicate suppressed: {plate_text}")
-                
-                if is_new:
+
+                # Mark as saved: positive ID means new, negative means duplicate
+                # Use 'new' or 'duplicate' to distinguish
+                tracker.saved[obj_id] = 'duplicate' if is_duplicate else 'new'
+
+                if not is_duplicate:
                     total_vehicles_counted += 1
                     # Log it
                     detected_plates_log.insert(0, {
@@ -764,10 +1012,10 @@ def draw_highway_hud(frame, detections, tracker):
                     })
                     if len(detected_plates_log) > 10:
                         detected_plates_log.pop()
-                    
-                    # Store consensus back to tracker for display
-                    if plate_text:
-                        tracker.plate_texts[obj_id] = plate_text
+
+                # Store consensus back to tracker for display
+                if plate_text:
+                    tracker.plate_texts[obj_id] = plate_text
 
     return annotated
 
@@ -886,19 +1134,17 @@ def generate_detection_feed(source=0):
                     break  # Stop signal
                     
                 dets = detect_vehicles_in_frame(frame_to_detect)
-                
+                if dets:
+                    plates = [d.get('plate') for d in dets if d.get('plate')]
+                    logger.info(f"Detection: {len(dets)} vehicles, plates: {plates}")
+
                 # Try to put results in queue without blocking
                 try:
-                    # Clear out old results if falling behind
                     while not result_queue.empty():
                         result_queue.get_nowait()
                     result_queue.put_nowait(dets)
                 except queue.Full:
                     pass
-                # Clear large objects from memory
-                del dets
-                del frame_to_detect
-                gc.collect()
                     
             except queue.Empty:
                 continue
@@ -910,7 +1156,7 @@ def generate_detection_feed(source=0):
     worker_thread.start()
 
     frame_count = 0
-    detect_interval = 3    # Send frame to detector every N frames
+    detect_interval = 5    # Send frame to detector every N frames
     last_detections = []
     fps_timer = time.time()
     current_fps = "--"
@@ -940,54 +1186,45 @@ def generate_detection_feed(source=0):
                 # Check if new detections are ready
                 try:
                     last_detections = result_queue.get_nowait()
-                    
-                    # Process new detections (save to DB)
-                    for det in last_detections:
-                        plate = det.get('plate')
-                        if plate:
-                            # Use plate_deduper for DB saving as well
-                            # We already updated it once in draw_highway_hud, 
-                            # but check again if it was actually saved to DB
-                            if not plate_deduper.is_duplicate(plate):
-                                try:
-                                    save_detection(det)
-                                    logger.info(f"Saved unique plate to DB: {plate}")
-                                except Exception as e:
-                                    logger.error(f"Save error: {e}")
-                            else:
-                                # Even if it's a duplicate for counting, maybe we want to update the log
-                                # but usually we just skip saving to avoid DB bloat
-                                pass
-                                
                 except queue.Empty:
                     pass # Keep using last_detections
 
                 # Draw HUD on every frame (using last known detections)
                 annotated = draw_highway_hud(frame, last_detections, vehicle_tracker)
-                
-                # Check for vehicles that just got "saved" (consensus reached) 
-                # in the HUD draw loop and save them to DB
+
+                # Only save to DB after consensus is reached (tracker.saved == True)
+                # This avoids saving raw partial reads like "116517" or "22DH57"
                 for obj_id in list(vehicle_tracker.saved.keys()):
-                    if vehicle_tracker.saved[obj_id] and obj_id not in saved_plates:
-                        # Find the best crop for this vehicle
-                        # For simplicity, we use the current detection if it matches the ID
+                    if vehicle_tracker.saved[obj_id] == 'new' and obj_id not in saved_plates:
                         consensus_plate = vehicle_tracker.plate_texts.get(obj_id)
                         if consensus_plate:
-                            # Trigger DB save
+                            saved_plates.add(obj_id)
+                            # Build detection dict with best available crop
+                            bbox = vehicle_tracker.bboxes.get(obj_id)
+                            det_to_save = {
+                                'plate': consensus_plate,
+                                'type': 'car',
+                                'confidence': vehicle_tracker.plate_confs.get(obj_id, 0.0),
+                            }
+                            # Try to get crop from current detections
+                            if bbox:
+                                vx1, vy1, vx2, vy2 = bbox
+                                det_to_save['vehicle_crop'] = frame[vy1:vy2, vx1:vx2]
+                                det_to_save['bbox'] = bbox
                             for det in last_detections:
-                                # Heuristic: if detection overlaps with tracker bbox
-                                if consensus_plate in (det.get('plate'), ''): # simplified
-                                    # Actually, we need to pass the consensus_plate to save_detection
-                                    det_copy = det.copy()
-                                    det_copy['plate'] = consensus_plate
-                                    try:
-                                        if not plate_deduper.is_duplicate(consensus_plate):
-                                            save_detection(det_copy)
-                                            saved_plates.add(obj_id) # Track internal ID to avoid re-saving
-                                            logger.info(f"💾 Saved MERGED plate to DB: {consensus_plate}")
-                                    except Exception as e:
-                                        logger.error(f"Save error: {e}")
+                                dx1, dy1, dx2, dy2 = det['bbox']
+                                if bbox and abs(dx1 - bbox[0]) < 80 and abs(dy1 - bbox[1]) < 80:
+                                    det_to_save['type'] = det.get('type', 'car')
+                                    if 'plate_img' in det:
+                                        det_to_save['plate_img'] = det['plate_img']
+                                    if 'plate_bbox' in det:
+                                        det_to_save['plate_bbox'] = det['plate_bbox']
                                     break
+                            try:
+                                save_detection(det_to_save)
+                                logger.info(f"Saved merged plate to DB: {consensus_plate}")
+                            except Exception as e:
+                                logger.error(f"Save error: {e}")
                 
                 ret, jpeg = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
                 

@@ -103,14 +103,25 @@ def test_image_upload(request):
             # Run detection
             detections = detect_vehicles_in_frame(frame)
             
-            # Just draw the results purely for static visual display
+            # Draw the results for static visual display
             annotated = frame.copy()
             for det in detections:
+                # Draw vehicle bounding box
+                if det.get('bbox'):
+                    bx1, by1, bx2, by2 = det['bbox']
+                    cv2.rectangle(annotated, (bx1, by1), (bx2, by2), (0, 255, 100), 2)
+                    vtype = det.get('type', 'car').upper()
+                    cv2.putText(annotated, vtype, (bx1, by1 - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 100), 1)
+                # Draw plate bounding box and text
                 if det.get('plate_bbox'):
                     px, py, pw, ph = det['plate_bbox']
                     cv2.rectangle(annotated, (px, py), (px+pw, py+ph), (0, 255, 255), 2)
-                    label = f"{det.get('plate', 'UNKNOWN')} ({det.get('confidence', 0.0):.2f})"
-                    cv2.putText(annotated, label, (px, py - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                    plate_text = det.get('plate', 'UNKNOWN')
+                    plate_conf = det.get('plate_conf', 0.0)
+                    label = f"{plate_text} ({plate_conf:.0%})"
+                    cv2.putText(annotated, label, (px, py - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             
             # Encode back to jpeg for the frontend
             ret, jpeg = cv2.imencode('.jpg', annotated, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -125,8 +136,8 @@ def test_image_upload(request):
                 "detections": [
                     {
                         "plate": d.get("plate"),
-                        "confidence": d.get("confidence", 0.0)
-                    } for d in detections
+                        "confidence": d.get("plate_conf", 0.0)
+                    } for d in detections if d.get("plate")
                 ]
             }
             return JsonResponse(response_data)

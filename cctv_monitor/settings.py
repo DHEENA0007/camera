@@ -97,3 +97,20 @@ CAMERA_SOURCE = 0  # 0 for default webcam, or RTSP URL for IP camera
 # Get your API key from https://platerecognizer.com/
 PLATE_RECOGNIZER_API_KEY = os.environ.get('PLATE_RECOGNIZER_API_KEY', '')
 ALPR_MODE = 'local' # 'local' or 'online'
+
+# Logging
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
+    },
+    'loggers': {
+        'vehicles': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+        },
+    },
+}
