@@ -33,12 +33,25 @@ detection_thread = None
 alpr_instance = None
 alpr_lock = threading.Lock()
 
-# Lazy-loaded YOLOv8 model
+# Lazy-loaded YOLOv8 model (vehicle detection)
 yolo_model = None
 yolo_lock = threading.Lock()
 
+# Lazy-loaded custom Indian plate detector (YOLOv8 trained on Indian plates)
+plate_detector_model = None
+plate_detector_lock = threading.Lock()
+
+# Lazy-loaded EasyOCR reader (for plate text recognition)
+ocr_reader = None
+ocr_lock = threading.Lock()
+
 # COCO class IDs for vehicles
 VEHICLE_CLASSES = {2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
+
+# Path to custom trained Indian plate model
+INDIAN_PLATE_MODEL_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), 'models', 'indian_plates_yolov8.pt'
+)
 
 def get_yolo():
     """Lazy load YOLOv8 model for vehicle detection."""
@@ -53,6 +66,139 @@ def get_yolo():
                 logger.error(f"Failed to load YOLOv8: {e}")
                 yolo_model = False
         return yolo_model if yolo_model is not False else None
+
+def get_plate_detector():
+    """Lazy load custom YOLOv8 Indian plate detection model."""
+    global plate_detector_model
+    with plate_detector_lock:
+        if plate_detector_model is None:
+            if os.path.exists(INDIAN_PLATE_MODEL_PATH):
+                try:
+                    from ultralytics import YOLO
+                    plate_detector_model = YOLO(INDIAN_PLATE_MODEL_PATH)
+                    logger.info(f"Indian plate detector loaded: {INDIAN_PLATE_MODEL_PATH}")
+                except Exception as e:
+                    logger.error(f"Failed to load Indian plate detector: {e}")
+                    plate_detector_model = False
+            else:
+                logger.warning(
+                    f"Indian plate model not found at {INDIAN_PLATE_MODEL_PATH}. "
+                    "Run train_indian_plates.py to train and generate the model."
+                )
+                plate_detector_model = False
+        return plate_detector_model if plate_detector_model is not False else None
+
+
+def get_ocr():
+    """Lazy load EasyOCR reader for plate text recognition."""
+    global ocr_reader
+    with ocr_lock:
+        if ocr_reader is None:
+            try:
+                import easyocr
+                ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+                logger.info("EasyOCR loaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to load EasyOCR: {e}")
+                ocr_reader = False
+        return ocr_reader if ocr_reader is not False else None
+
+
+def _detect_plates_with_custom_model(frame):
+    """
+    Detect Indian license plates using custom-trained YOLOv8 + EasyOCR.
+
+    Returns a list in the same format as OpenALPR results so the rest of the
+    pipeline (plate-vehicle association, tracking, etc.) works unchanged:
+      [{'coordinates': [{'x':..,'y':..}, ...],
+        'candidates': [{'plate': 'TEXT', 'confidence': 85.0}, ...]}, ...]
+    """
+    detector = get_plate_detector()
+    if detector is None:
+        return []
+
+    ocr = get_ocr()
+    h, w = frame.shape[:2]
+
+    # Upscale small frames for better detection
+    scale = 1.0
+    process_frame = frame
+    if w < 800:
+        scale = 800.0 / w
+        process_frame = cv2.resize(frame, None, fx=scale, fy=scale,
+                                   interpolation=cv2.INTER_CUBIC)
+
+    try:
+        results = detector.predict(process_frame, conf=0.35, verbose=False, imgsz=640)
+    except Exception as e:
+        logger.error(f"Plate detector inference error: {e}")
+        return []
+
+    plate_results = []
+    boxes = results[0].boxes if results else []
+
+    for box in boxes:
+        det_conf = float(box.conf[0])
+        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+
+        # Scale coords back to original frame size
+        if scale != 1.0:
+            x1 = int(x1 / scale)
+            y1 = int(y1 / scale)
+            x2 = int(x2 / scale)
+            y2 = int(y2 / scale)
+
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        plate_crop = frame[y1:y2, x1:x2]
+        plate_text = ''
+        ocr_conf = det_conf
+
+        if ocr is not None and plate_crop.size > 0:
+            try:
+                # Preprocess plate crop for better OCR
+                plate_gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+                # Upscale plate crop for OCR accuracy
+                ph, pw = plate_gray.shape
+                if pw < 200:
+                    scale_ocr = 200.0 / pw
+                    plate_gray = cv2.resize(plate_gray, None, fx=scale_ocr, fy=scale_ocr,
+                                            interpolation=cv2.INTER_CUBIC)
+                _, plate_bin = cv2.threshold(plate_gray, 0, 255,
+                                             cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                ocr_results = ocr.readtext(plate_bin, allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789')
+                if ocr_results:
+                    texts = [r[1].upper().replace(' ', '') for r in ocr_results if r[2] > 0.3]
+                    confs = [r[2] for r in ocr_results if r[2] > 0.3]
+                    if texts:
+                        plate_text = ''.join(texts)
+                        ocr_conf = float(np.mean(confs))
+            except Exception as e:
+                logger.warning(f"OCR error on plate crop: {e}")
+
+        if not plate_text:
+            plate_text = 'UNREADABLE'
+
+        # Build result in OpenALPR-compatible format
+        plate_results.append({
+            'coordinates': [
+                {'x': x1, 'y': y1},
+                {'x': x2, 'y': y1},
+                {'x': x2, 'y': y2},
+                {'x': x1, 'y': y2},
+            ],
+            'candidates': [{'plate': plate_text, 'confidence': ocr_conf * 100}],
+        })
+
+    if plate_results:
+        logger.info(f"Custom detector found {len(plate_results)} plates: "
+                    f"{[r['candidates'][0]['plate'] for r in plate_results]}")
+    return plate_results
+
 
 def get_alpr():
     """Lazy load OpenALPR engine."""
@@ -688,43 +834,47 @@ def detect_vehicles_in_frame(frame):
                 det['plate_img'] = frame[py:py+ph, px:px+pw]
         return detections
 
-    # --- Local Mode: OpenALPR (full frame) + YOLO ---
+    # --- Local Mode: Custom Indian Plate Detector (preferred) or OpenALPR + YOLO ---
     h, w = frame.shape[:2]
     detections = []
 
-    # ===== STEP 1: Run OpenALPR on the FULL FRAME =====
-    alpr = get_alpr()
-    plate_results = []  # Raw OpenALPR results
+    # ===== STEP 1: Detect plates (custom model preferred over OpenALPR) =====
+    plate_results = []
 
-    if alpr is not None:
-        try:
-            # Upscale if frame is small for better plate detection
-            scale = 1.0
-            process_frame = frame
-            if w < 800:
-                scale = 800.0 / w
-                process_frame = cv2.resize(frame, None, fx=scale, fy=scale,
-                                           interpolation=cv2.INTER_CUBIC)
+    # Try custom-trained Indian plate model first
+    custom_detector = get_plate_detector()
+    if custom_detector is not None:
+        plate_results = _detect_plates_with_custom_model(frame)
 
-            ret, enc = cv2.imencode('.jpg', process_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
-            if ret:
-                alpr_raw = alpr.recognize_array(enc.tobytes())
-                raw_results = alpr_raw.get('results', [])
+    # Fall back to OpenALPR if custom model is unavailable or found nothing
+    if not plate_results:
+        alpr = get_alpr()
+        if alpr is not None:
+            try:
+                scale = 1.0
+                process_frame = frame
+                if w < 800:
+                    scale = 800.0 / w
+                    process_frame = cv2.resize(frame, None, fx=scale, fy=scale,
+                                               interpolation=cv2.INTER_CUBIC)
 
-                # Scale coordinates back to original frame size
-                if scale != 1.0:
-                    for pr in raw_results:
-                        for coord in pr.get('coordinates', []):
-                            coord['x'] = int(coord['x'] / scale)
-                            coord['y'] = int(coord['y'] / scale)
+                ret, enc = cv2.imencode('.jpg', process_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                if ret:
+                    alpr_raw = alpr.recognize_array(enc.tobytes())
+                    raw_results = alpr_raw.get('results', [])
 
-                # Merge overlapping/split detections
-                plate_results = _merge_plate_results(raw_results, h, w)
-                if plate_results:
-                    plates_found = [pr['candidates'][0]['plate'] for pr in plate_results if pr.get('candidates')]
-                    logger.info(f"OpenALPR found {len(plate_results)} plates on full frame: {plates_found}")
-        except Exception as e:
-            logger.error(f"OpenALPR full-frame error: {e}")
+                    if scale != 1.0:
+                        for pr in raw_results:
+                            for coord in pr.get('coordinates', []):
+                                coord['x'] = int(coord['x'] / scale)
+                                coord['y'] = int(coord['y'] / scale)
+
+                    plate_results = _merge_plate_results(raw_results, h, w)
+                    if plate_results:
+                        plates_found = [pr['candidates'][0]['plate'] for pr in plate_results if pr.get('candidates')]
+                        logger.info(f"OpenALPR found {len(plate_results)} plates on full frame: {plates_found}")
+            except Exception as e:
+                logger.error(f"OpenALPR full-frame error: {e}")
 
     # ===== STEP 2: Run YOLO for vehicle detection =====
     vehicle_boxes = []  # (x1, y1, x2, y2, type, conf)

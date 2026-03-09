@@ -1,0 +1,6 @@
+names:
+- license_plate
+nc: 1
+path: /run/media/dheena/Leave you files/Camera/datasets/indian_plates
+train: images/train
+val: images/val
